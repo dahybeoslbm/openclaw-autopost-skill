@@ -1,0 +1,18 @@
+
+services:
+  auto-travel-blogger:
+    build: .
+    volumes:
+      # Mount user's openclaw and gemini config so the container can use authenticated models and installed skills
+      - ~/.openclaw:/root/.openclaw:rw
+      - ~/.gemini:/root/.gemini:ro
+      # Mount the local folder to receive output files (the markdown article and generated images)
+      - ./output:/app/output
+    env_file:
+      - ~/.openclaw/workspace/.env
+    environment:
+      - OUTPUT_DIR=/app/output
+      - OPENCLAW_BIN=/root/.openclaw/tmp/node-compile-cache/openclaw 
+    # The default command will be appended to the ENTRYPOINT in Dockerfile
+    # Example usage: docker-compose run --rm auto-travel-blogger "Viết bài review về Đà Lạt"
+

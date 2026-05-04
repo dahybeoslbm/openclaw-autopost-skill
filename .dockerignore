@@ -1,0 +1,27 @@
+# Credentials — tuyệt đối không vào image
+.env
+*.key
+*.pem
+secrets/
+
+# Python local
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Output files
+output/
+travel_blog_img_*.png
+travel_blog_img_*.jpg
+
+# Dev tools
+.git/
+.gitignore
+*.md
+!SKILL.md
+
+# OS
+.DS_Store
+Thumbs.db

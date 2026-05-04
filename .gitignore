@@ -1,0 +1,26 @@
+# ── Credentials — KHÔNG bao giờ commit ─────────────────────
+.env
+*.key
+*.pem
+secrets/
+
+# ── Python ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ── Output ──────────────────────────────────────────────────
+output/
+*.md
+!README.md
+!SKILL.md
+
+# ── Generated images ────────────────────────────────────────
+travel_blog_img_*.png
+travel_blog_img_*.jpg
+
+# ── OS ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
