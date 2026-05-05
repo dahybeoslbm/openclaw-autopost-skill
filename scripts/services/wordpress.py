@@ -13,7 +13,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-
+ 
 class WordPressService:
     def __init__(self, config: WordPressConfig):
         self._config = config
@@ -156,8 +156,7 @@ class WordPressService:
 
     def publish(
         self,
-        title: str,
-        markdown_content: str,
+        article_data: dict,
         image_files: list[str],
         schedule_time: str = "",
         category_names: list[str] | None = None,
@@ -173,11 +172,12 @@ class WordPressService:
 
         logger.info("  → Chuẩn bị đăng lên WordPress...")
 
-        # 1. Markdown → HTML
-        html_content = md.markdown(
-            markdown_content,
-            extensions=["extra", "nl2br"],
-        )
+        title   = article_data.get("seo_title", "")
+        excerpt = article_data.get("excerpt",   "")
+        content = article_data.get("content",   "")
+        
+        # 1. HTML
+        html_content = article_data.get("content_html", "")
 
         # 2. Upload ảnh → lấy featured image ID
         featured_media_id = None

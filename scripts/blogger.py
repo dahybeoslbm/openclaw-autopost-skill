@@ -22,12 +22,6 @@ logger = get_logger("blogger")
 
 # ── Helpers ─────────────────────────────────────────────────
 
-def _extract_title(markdown_content: str, fallback: str) -> str:
-    """Lấy tiêu đề từ dòng # đầu tiên trong markdown."""
-    for line in markdown_content.splitlines():
-        if line.startswith("#"):
-            return line.lstrip("#").strip()
-    return fallback
 
 
 def _build_images_markdown(image_files: list[str]) -> str:
@@ -98,7 +92,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
 
     # ── Bước 5: Viết bài ────────────────────────────────────
     logger.info("[5/6] Chấp bút bài viết (Gemini)...")
-    article_md = gemini.generate(
+    article_data = gemini.generate_article(
         gemini.build_article_prompt(
             topic=parsed.topic,
             platform=parsed.platform,
@@ -108,14 +102,12 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         )
     )
 
-    title = _extract_title(article_md, parsed.topic)
-
     # ── Bước 6: Xuất bản ────────────────────────────────────
     logger.info("[6/6] Xuất bản bài viết...")
 
     # Luôn lưu file .md (backup)
     file_path = _save_to_file(
-        content=article_md,
+        content=article_data.get("content_html", ""),
         output_dir=cfg.output_dir,
         topic=parsed.topic,
         platform=parsed.platform,
@@ -128,8 +120,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     # Đăng WordPress nếu platform phù hợp
     if parsed.platform.lower() == "wordpress":
         wp_result = wp.publish(
-            title=title,
-            markdown_content=article_md,
+            article_data=article_data,
             image_files=image_files,
             schedule_time=parsed.schedule_time,
             category_names=["Du Lịch"],
