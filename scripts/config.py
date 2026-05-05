@@ -44,7 +44,11 @@ class WordPressConfig:
 class OpenClawConfig:
     bin_path: str
     timeout: int = 30
+    
 
+# @dataclass(frozen=True)
+# class BufferConfig:
+    
 
 @dataclass(frozen=True)
 class AppConfig:

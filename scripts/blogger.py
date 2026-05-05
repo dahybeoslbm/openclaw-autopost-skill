@@ -132,6 +132,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
             result.wp_status   = wp_result["status"]
 
     # Webhook notification
+    title = article_data.get("seo_title", parsed.topic)
     if webhook_url:
         _notify_webhook(webhook_url, title, file_path)
 

@@ -32,10 +32,10 @@ class WordPressService:
 
     # ── Media ───────────────────────────────────────────────
 
-    def upload_image(self, image_path: str) -> int | None:
+    def upload_image(self, image_path: str) -> tuple[int, str]  | None:
         """
         Upload ảnh local lên WP Media Library.
-        Trả về media ID nếu thành công, None nếu thất bại.
+        Trả về media ID và URL nếu thành công, None nếu thất bại.
         Bỏ qua ảnh remote URL (http...).
         """
         if not image_path or image_path.startswith("http"):
@@ -67,8 +67,9 @@ class WordPressService:
 
             if resp.status_code == 201:
                 media_id = resp.json()["id"]
+                media_url = resp.json()["source_url"]
                 logger.info("  → Upload OK, media ID: %d", media_id)
-                return media_id
+                return media_id, media_url
 
             logger.warning("  → Upload thất bại: %d %s", resp.status_code, resp.text[:100])
 
@@ -181,10 +182,24 @@ class WordPressService:
 
         # 2. Upload ảnh → lấy featured image ID
         featured_media_id = None
+        # Map local path → WP URL để thay thế trong nội dung
+        path_to_url: dict[str, str] = {}
+
         for img_path in image_files:
-            media_id = self.upload_image(img_path)
-            if media_id and not featured_media_id:
-                featured_media_id = media_id
+            result = self.upload_image(img_path)
+            if result:
+                media_id, media_url = result
+                path_to_url[img_path] = media_url
+                if not featured_media_id:
+                    featured_media_id = media_id
+
+        # Thay thế src ảnh local trong content_html bằng URL thực của WP
+        for local_path, wp_url in path_to_url.items():
+            # Gemini thường tạo src kiểu "./filename" hoặc "filename"
+            filename = os.path.basename(local_path)
+            html_content = html_content.replace(f"./{filename}", wp_url)
+            html_content = html_content.replace(filename, wp_url)   # fallback không có ./
+            html_content = html_content.replace(local_path, wp_url) # fallback đường dẫn đầy đủ
 
         # 3. Resolve categories & tags
         category_ids = [
