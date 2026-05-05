@@ -6,7 +6,7 @@ import json
 import subprocess
 from urllib.parse import urljoin
 
-from scripts.config import OpenClawConfig
+from config import OpenClawConfig
 from utils.models import ImageData, ScrapedContent
 from utils.logger import get_logger
 

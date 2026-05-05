@@ -8,7 +8,7 @@ import os
 import requests
 import markdown as md
 
-from scripts.config import WordPressConfig
+from config import WordPressConfig
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

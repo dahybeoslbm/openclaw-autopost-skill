@@ -2,7 +2,7 @@
 services/gemini.py — Tất cả tương tác với Gemini API.
 """
 import requests
-from scripts.config import GeminiConfig
+from config import GeminiConfig
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
