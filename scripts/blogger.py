@@ -9,6 +9,7 @@ import time
 import requests
 
 from config import load_config
+
 from utils.logger import get_logger
 from utils.models import PublishResult
 from utils.parser import parse_request
@@ -17,6 +18,9 @@ from services.openclaw import OpenClawService
 from services.image import render_images_parallel, parse_image_prompts
 from services.wordpress import WordPressService
 
+from services.buffer import BufferClient
+from utils.models    import BufferPostResult
+from services.buffer.social_formatter import build_all as build_social_texts
 logger = get_logger("blogger")
 
 
@@ -55,6 +59,23 @@ def _notify_webhook(webhook_url: str, title: str, file_path: str) -> None:
     except Exception as e:
         logger.warning("Webhook error: %s", e)
 
+# Danh sách platform thuộc Buffer (social)
+_BUFFER_PLATFORMS = {
+    "facebook", "instagram", "tiktok", "threads",
+    "twitter", "linkedin", "youtube", "bluesky",
+    "pinterest", "mastodon", "google_business",
+}
+_SERVICE_TO_ATTR = {
+    "facebook": "facebook", "instagram": "instagram",
+    "tiktok": "tiktok", "threads": "threads",
+    "twitter": "twitter", "x": "twitter",
+    "linkedin": "linkedin", "youtube": "youtube",
+    "bluesky": "bluesky", "pinterest": "pinterest",
+    "mastodon": "mastodon",
+    "google": "google_business",
+    "google_business": "google_business",
+    "googlebusiness": "google_business",
+}
 
 # ── Main workflow ────────────────────────────────────────────
 
@@ -135,6 +156,100 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     title = article_data.get("seo_title", parsed.topic)
     if webhook_url:
         _notify_webhook(webhook_url, title, file_path)
+    
+    platform_lower = parsed.platform.lower()
+    # Chỉ chạy Buffer nếu KHÔNG phải wordpress
+    should_run_buffer = (
+        cfg.buffer.is_valid
+        and platform_lower != "wordpress"
+    )
+    
+    if should_run_buffer:
+        # Lọc đúng platform nếu user nói cụ thể,
+        # còn "blog" (default) = không nói gì → đăng tất cả
+        buffer_platforms = (
+            [platform_lower]
+            if platform_lower in _BUFFER_PLATFORMS
+            else []   # [] = tất cả channels
+        )
+    
+        logger.info(
+            "[7/7] Đăng Buffer: %s",
+            ", ".join(buffer_platforms) if buffer_platforms else "tất cả platforms"
+        )
+        
+        # ── Chuẩn bị ảnh ────────────────────────────────────
+        social_image_urls = []
+        if image_files:
+            first = image_files[0]
+            if first.startswith("http"):
+                social_image_urls = [first]
+
+        # ── Build text riêng cho từng platform ──────────────
+        social_texts = build_social_texts( 
+            topic=parsed.topic,
+            title=article_data.get("seo_title", parsed.topic),
+            excerpt=article_data.get("excerpt", ""),
+            wp_url=result.wp_post_url or "",
+        )
+        
+        try:
+            buffer = BufferClient(api_key=cfg.buffer.api_key)
+            targets = buffer.get_channels_from_env(buffer_platforms)
+            
+            if not targets:
+                logger.warning("  → Không tìm thấy channel nào trong .env")
+                
+            for ch in targets:
+                service = (ch.get("service") or "").lower()
+                post_opts = social_texts.get(service) or social_texts["facebook"]
+
+                attr = _SERVICE_TO_ATTR.get(service)
+                platform_obj = getattr(buffer, attr, None) if attr else None
+
+                if not platform_obj:
+                    logger.warning("  → Platform '%s' chưa hỗ trợ, bỏ qua", service)
+                    continue
+
+                try:
+                    post = platform_obj.create_post(
+                        ch["id"],
+                        text=post_opts["text"],
+                        image_urls=social_image_urls or None,
+                    )
+                    br = BufferPostResult(
+                        platform=service,
+                        channel_name=ch.get("name", ""),
+                        channel_id=ch["id"],
+                        status="success",
+                        post_id=post.get("id", ""),
+                    )
+                    logger.info("  → ✅ [%s] %s — %s", service.upper(), ch.get("name"), post.get("id"))
+
+                except Exception as e:
+                    br = BufferPostResult(
+                        platform=service,
+                        channel_name=ch.get("name", ""),
+                        channel_id=ch["id"],
+                        status="error",
+                        error=str(e),
+                    )
+                    logger.warning("  → ❌ [%s] %s — %s", service.upper(), ch.get("name"), e)
+
+                result.buffer_results.append(br)
+
+            succeeded = sum(1 for r in result.buffer_results if r.status == "success")
+            logger.info(
+                "  → Buffer: %d/%d channel thành công",
+                succeeded, len(result.buffer_results)
+            )
+        except Exception as e:
+            logger.warning("  → Buffer thất bại: %s", e)
+    else:
+        if platform_lower == "wordpress":
+            logger.info("[7/7] Bỏ qua Buffer (chỉ đăng WordPress)")
+        else:
+            logger.info("[7/7] Bỏ qua Buffer (chưa cấu hình BUFFER_API_KEY)")
 
     return result
 

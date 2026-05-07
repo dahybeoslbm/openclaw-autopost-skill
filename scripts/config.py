@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class GeminiConfig:
     api_key: str
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-1.5-flash"
     timeout: int = 30
     api_url: str = field(init=False)
 
@@ -46,8 +46,15 @@ class OpenClawConfig:
     timeout: int = 30
     
 
-# @dataclass(frozen=True)
-# class BufferConfig:
+@dataclass(frozen=True)
+class BufferConfig:
+    api_key: str
+    # Không cần parse channels ở đây — BufferClient tự đọc từ os.environ
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.api_key)
+    
     
 
 @dataclass(frozen=True)
@@ -56,7 +63,7 @@ class AppConfig:
     openclaw: OpenClawConfig
     gemini: GeminiConfig
     wordpress: WordPressConfig
-
+    buffer: BufferConfig
 
 def load_config() -> AppConfig:
     """
@@ -82,5 +89,8 @@ def load_config() -> AppConfig:
             username=os.environ.get("WP_USERNAME", ""),
             app_password=os.environ.get("WP_APP_PASSWORD", ""),
             timeout=int(os.environ.get("WP_TIMEOUT", "15")),
+        ),
+        buffer=BufferConfig(
+            api_key=os.environ.get("BUFFER_API_KEY", ""),
         ),
     )
