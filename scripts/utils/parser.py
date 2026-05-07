@@ -10,10 +10,19 @@ logger = get_logger(__name__)
 
 # ── Mapping từ khoá → platform ─────────────────────────────
 _PLATFORM_KEYWORDS: dict[str, list[str]] = {
-    "Facebook" : ["facebook", "fb"],
-    "Wordpress": ["wordpress", "wp"],
-    "Instagram": ["instagram", "ig"],
-    "Blog"     : [],  # default
+    "wordpress":      ["wordpress", "wp"],
+    "facebook":       ["facebook", "fb"],
+    "instagram":      ["instagram", "ig"],
+    "tiktok":         ["tiktok", "tik tok"],
+    "threads":        ["threads"],
+    "twitter":        ["twitter", "x.com"],
+    "linkedin":       ["linkedin"],
+    "youtube":        ["youtube", "yt"],
+    "bluesky":        ["bluesky", "blue sky"],
+    "pinterest":      ["pinterest"],
+    "mastodon":       ["mastodon"],
+    "google_business":["google business", "google my business"],
+    "blog":           [],  # default — không khớp gì hết
 }
 
 # ── Mapping từ khoá → schedule ─────────────────────────────

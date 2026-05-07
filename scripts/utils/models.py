@@ -28,6 +28,15 @@ class ScrapedContent:
     images: list[ImageData] = field(default_factory=list)
     source_url: str = ""
 
+@dataclass
+class BufferPostResult:
+    """Kết quả đăng một channel lên Buffer."""
+    platform:     str
+    channel_name: str
+    channel_id:   str
+    status:       str          # "success" | "error"
+    post_id:      str  = ""
+    error:        str  = ""
 
 @dataclass
 class PublishResult:
@@ -36,7 +45,12 @@ class PublishResult:
     wp_post_id: Optional[int] = None
     wp_post_url: Optional[str] = None
     wp_status: Optional[str] = None
+    buffer_results: list["BufferPostResult"] = field(default_factory=list) 
 
     @property
     def posted_to_wp(self) -> bool:
         return self.wp_post_id is not None
+    
+    @property
+    def posted_to_buffer(self) -> bool:
+        return any(r.status == "success" for r in self.buffer_results)
