@@ -46,7 +46,19 @@ def _detect_platform(text: str) -> str:
 
 def _detect_topic(text: str, original: str) -> str:
     match = re.search(r"(về|tại|ở|du lịch)\s+([^,.\n]+)", text)
-    return match.group(2).strip() if match else original[:30]
+    if not match:
+        return original[:30]
+    
+    raw = match.group(2).strip()
+    
+    # Cắt bỏ phần "đăng <platform>" nếu có
+    raw = re.sub(
+        r"\s+(đăng|post|lên)\s+(facebook|instagram|tiktok|threads|twitter|"
+        r"linkedin|youtube|bluesky|pinterest|mastodon|wordpress|wp|fb|ig).*$",
+        "", raw
+    ).strip()
+    
+    return raw
 
 
 def parse_request(user_prompt: str) -> ParsedRequest:

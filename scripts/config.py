@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class GeminiConfig:
     api_key: str
-    model: str = "gemini-1.5-flash"
-    timeout: int = 30
+    model: str = "gemini-2.5-flash"
+    timeout: int = 90
     api_url: str = field(init=False)
 
     def __post_init__(self):
@@ -82,7 +82,7 @@ def load_config() -> AppConfig:
         gemini=GeminiConfig(
             api_key=os.environ.get("GEMINI_API_KEY", ""),
             model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
-            timeout=int(os.environ.get("GEMINI_TIMEOUT", "30")),
+            timeout=int(os.environ.get("GEMINI_TIMEOUT", "90")),
         ),
         wordpress=WordPressConfig(
             site_url=os.environ.get("WP_SITE_URL", ""),

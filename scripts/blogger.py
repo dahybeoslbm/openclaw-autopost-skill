@@ -191,6 +191,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
             title=article_data.get("seo_title", parsed.topic),
             excerpt=article_data.get("excerpt", ""),
             wp_url=result.wp_post_url or "",
+            social_captions=article_data.get("social_captions"),  
         )
         
         try:
