@@ -2,6 +2,7 @@
 services:
   auto-travel-blogger:
     build: .
+    network_mode: host
     volumes:
       - ./:/app:rw
       - ~/.openclaw:/root/.openclaw:rw
