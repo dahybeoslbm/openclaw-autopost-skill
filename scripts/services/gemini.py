@@ -128,12 +128,73 @@ class GeminiService:
         source_url: str,
         text_content: str,
         images_markdown: str,
+        *,
+        source_is_html: bool = False,
+        doc_title: str = "",
+        doc_keywords: list[str] | None = None,
     ) -> str:
         image_instruction = (
             f"Chèn các ảnh sau vào bài viết ở vị trí phù hợp:\n{images_markdown}"
             if images_markdown
             else "KHÔNG tự ý chèn ảnh vào bài viết vì hiện không có ảnh."
         )
+        
+        keyword_hint = ""
+        if doc_keywords:
+            keyword_hint = f"\nCác từ khoá nổi bật: {', '.join(doc_keywords[:10])}"
+        
+        source_section = f"""NGUỒN NỘI DUNG: Google Docs{f' — "{doc_title}"' if doc_title else ''}
+URL: {source_url}{keyword_hint}
+
+--- NỘI DUNG GOOGLE DOC (HTML) ---
+{text_content[:3000]}
+--- KẾT THÚC ---""" if source_is_html else f"""NGUỒN THAM KHẢO: {source_url}
+{text_content[:2000]}"""
+
+
+        # ── Khi nguồn là Google Docs: CHỈ chuyển format, không viết thêm ────
+        if source_is_html:
+            return f"""
+Bạn là chuyên gia định dạng nội dung SEO. Nhiệm vụ: chuyển đổi nội dung Google Docs sang HTML chuẩn SEO.
+
+{source_section}
+
+QUY TẮC BẮT BUỘC:
+- GIỮ NGUYÊN 100% nội dung gốc — KHÔNG thêm, KHÔNG bớt, KHÔNG viết lại bất kỳ thông tin nào
+- KHÔNG sáng tác, KHÔNG suy luận thêm — chỉ chuyển đổi định dạng
+- Nội dung do con người viết, AI chỉ có nhiệm vụ format lại
+
+YÊU CẦU HTML:
+- KHÔNG viết thẻ <html>, <head>, <body>
+- KHÔNG dùng <h1> (WordPress tự tạo từ seo_title)
+- Dùng <h2> / <h3> theo đúng cấu trúc heading gốc trong doc
+- Dùng <p> cho đoạn văn
+- Dùng <strong> cho text in đậm trong doc gốc
+- Dùng <blockquote> cho phần được highlight/callout trong doc
+- Dùng <ul><li> / <ol><li> cho danh sách gốc
+- {image_instruction}
+
+Trả về JSON hợp lệ, không thêm text ngoài JSON:
+{{
+  "seo_title": "Lấy từ tiêu đề doc hoặc heading đầu tiên, 50-60 ký tự",
+  "meta_description": "Tóm tắt từ đoạn mở đầu của doc, 150-160 ký tự, có call-to-action",
+  "focus_keyword": "Từ khoá chính rút ra từ nội dung doc",
+  "excerpt": "2-3 câu đầu của bài viết gốc",
+  "content_html": "<p>Toàn bộ nội dung HTML đã format ở đây — giữ nguyên nội dung gốc</p>",
+  "social_captions": {{
+    "facebook":  "Trích dẫn câu hấp dẫn nhất từ bài, 40-80 ký tự, 2-3 emoji, 2 hashtag.",
+    "instagram": "Dòng đầu hook từ nội dung gốc (dưới 125 ký tự). Xuống dòng. 2-3 câu từ bài viết. Xuống dòng. 3-5 hashtag. Kết: 📍 Link in bio",
+    "twitter":   "Tối đa 80 ký tự, trích ý nổi bật nhất, 1 hashtag.",
+    "threads":   "Tối đa 450 ký tự. 3-4 điểm nổi bật từ bài, mỗi điểm 1 dòng với emoji bullet. CTA ngắn. KHÔNG hashtag.",
+    "tiktok":    "Hook từ fact/điểm thú vị trong bài. 150-250 ký tự. 3-5 hashtag trending.",
+    "linkedin":  "Mở bằng insight từ bài viết. 700-1000 ký tự. 3-4 hashtag. Kết bằng câu hỏi.",
+    "pinterest": "150-250 ký tự inspirational từ nội dung, bắt đầu bằng động từ. Không hashtag.",
+    "bluesky":   "200-270 ký tự. Ý hay nhất từ bài, witty, không hashtag.",
+    "mastodon":  "300-400 ký tự từ nội dung gốc. 3-4 hashtag.",
+    "google_business": "300-500 ký tự giới thiệu địa điểm từ bài viết. CTA rõ ràng."
+  }}
+}}
+""".strip()
         return f"""
         Bạn là Travel Blogger SEO chuyên nghiệp.
         Viết bài review du lịch về: "{topic}". Nền tảng: {platform}.

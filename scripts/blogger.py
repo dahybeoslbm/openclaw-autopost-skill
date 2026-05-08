@@ -1,6 +1,14 @@
 """
 blogger.py — Entry point. Chỉ chứa orchestration (điều phối luồng).
 Không chứa business logic — mọi thứ đã được tách vào services/.
+
+Luồng nghiệp vụ:
+  1. Parse prompt → topic, platform, schedule
+  2. Tìm Google Doc tên = topic, lấy file mới nhất (api.drive.article)
+  3. Nếu có doc → Gemini CHỈ convert format (Docs JSON → SEO HTML)
+                   Nội dung giữ nguyên 100% — không viết thêm
+     Nếu không  → fallback: OpenClaw scrape → Gemini viết bài
+  4. Đăng WordPress và/hoặc Buffer tuỳ platform
 """
 import os
 import sys
@@ -17,9 +25,10 @@ from services.gemini import GeminiService
 from services.openclaw import OpenClawService
 from services.image import render_images_parallel, parse_image_prompts
 from services.wordpress import WordPressService
+from services.googledrive import GoogleDriveService, DriveArticle
 
 from services.buffer import BufferClient
-from utils.models    import BufferPostResult
+from utils.models    import BufferPostResult, ScrapedContent
 from services.buffer.social_formatter import build_all as build_social_texts
 
 from datetime import datetime, timezone
@@ -79,6 +88,48 @@ _SERVICE_TO_ATTR = {
     "googlebusiness": "google_business",
 }
 
+# ── Source resolver ───────────────────────────────────────────────────────────
+ 
+def _resolve_source(
+    topic: str,
+    cfg,
+    openclaw: OpenClawService,
+) -> tuple[str, ScrapedContent, DriveArticle | None]:
+    """
+    Lấy nội dung nguồn theo ưu tiên:
+      1. Google Drive (tìm doc tên = topic, lấy file mới nhất)
+      2. OpenClaw scraping (fallback)
+ 
+    Returns: (source_url, scraped, drive_article)
+    """
+    # ── Ưu tiên 1: Google Drive ───────────────────────────────────────────────
+    if cfg.googledrive.is_valid:
+        try:
+            drive_service = GoogleDriveService.from_config(cfg.googledrive)
+            drive_article = drive_service.fetch_article(
+                topic=topic,
+                language=cfg.googledrive.language,
+            )
+            if drive_article:
+                source_url = drive_article.document_url or \
+                             f"google-docs://{drive_article.document_id}"
+                # ScrapedContent dùng để render ảnh (bước 4)
+                scraped = ScrapedContent(
+                    text=drive_article.plain_text(),
+                    images=[],        # ảnh từ Drive được xử lý riêng qua inline_images
+                    source_url=source_url,
+                )
+                return source_url, scraped, drive_article
+        except RuntimeError as exc:
+            logger.warning("  → [Drive] Không khả dụng, fallback về OpenClaw: %s", exc)
+ 
+    # ── Fallback 2: OpenClaw ──────────────────────────────────────────────────
+    logger.info("  → [OpenClaw] Scraping web cho topic: %s", topic)
+    source_url = openclaw.search(topic) or "https://vnexpress.net/du-lich"
+    scraped    = openclaw.fetch(source_url)
+    return source_url, scraped, None
+ 
+
 # ── Main workflow ────────────────────────────────────────────
 
 def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
@@ -97,167 +148,169 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     parsed = parse_request(user_prompt)
 
     # ── Bước 2: Tìm kiếm nguồn ──────────────────────────────
-    source_url = openclaw.search(parsed.topic) or "https://vnexpress.net/du-lich"
-
-    # ── Bước 3: Cào nội dung ────────────────────────────────
-    scraped = openclaw.fetch(source_url)
-
-    # ── Bước 4: Sinh image prompts ──────────────────────────
-    logger.info("[4/6] Chuyển đổi ý tưởng ảnh...")
-    alts = [img.alt for img in scraped.images if img.alt] or [parsed.topic] * 3
-    raw_prompts = gemini.generate(
-        gemini.build_image_prompts(alts[:3], parsed.topic)
+    logger.info("[2/6] Lấy nội dung nguồn...")
+    source_url, scraped, drive_article = _resolve_source(
+        topic=parsed.topic, cfg=cfg, openclaw=openclaw
     )
-    prompts = parse_image_prompts(raw_prompts, parsed.topic, count=len(alts[:3]))
 
-    # ── Bước 4.5: Vẽ ảnh song song ──────────────────────────
-    image_files = render_images_parallel(prompts, scraped.images)
-
-    # ── Bước 5: Viết bài ────────────────────────────────────
-    logger.info("[5/6] Chấp bút bài viết (Gemini)...")
-    article_data = gemini.generate_article(
-        gemini.build_article_prompt(
-            topic=parsed.topic,
-            platform=parsed.platform,
-            source_url=source_url,
-            text_content=scraped.text,
-            images_markdown=_build_images_markdown(image_files),
+    # ── Bước 3: Render ảnh ───────────────────────────────────────────────────
+    # Khi có Google Doc với inline_images → dùng trực tiếp, không cần AI render
+    # Khi fallback OpenClaw → dùng AI render như cũ
+    if drive_article and drive_article.has_images():
+        logger.info("[3/6] Dùng %d ảnh từ Google Docs", drive_article.image_count())
+        # inline_images là dict id→base64, đã được PHP lấy về
+        # Gemini sẽ nhúng vào HTML qua mapping trong prompt
+        image_files: list[str] = []   # không cần file riêng, ảnh đã trong doc_json
+ 
+    else:
+        logger.info("[3/6] Render ảnh AI từ nội dung...")
+        alts = [img.alt for img in scraped.images if img.alt] or [parsed.topic] * 3
+        raw_prompts = gemini.generate(
+            gemini.build_image_prompts(alts[:3], parsed.topic)
         )
+        prompts     = parse_image_prompts(raw_prompts, parsed.topic, count=len(alts[:3]))
+        image_files = render_images_parallel(prompts, scraped.images)
+
+    # ── Bước 4: Tạo nội dung HTML ────────────────────────────────────────────
+    logger.info("[4/6] Chuyển đổi nội dung (Gemini)...")
+    
+    if drive_article:
+        # ─── CHỈ CONVERT FORMAT — không viết thêm nội dung ───────────────────
+        logger.info("  → Gemini: convert Google Docs JSON → SEO HTML")
+        article_prompt = gemini.build_article_prompt(
+            topic          = parsed.topic,
+            platform       = parsed.platform,
+            source_url     = drive_article.document_url,
+            text_content   = drive_article.content,
+            images_markdown= "",
+            source_is_html = True,
+            doc_title      = drive_article.title,
+            doc_keywords   = drive_article.keywords,
+        )
+    else:
+        # ─── VIẾT BÀI — fallback khi không có doc ────────────────────────────
+        logger.info("  → Gemini: viết bài từ nguồn web")
+        article_prompt = gemini.build_article_prompt(
+            topic          = parsed.topic,
+            platform       = parsed.platform,
+            source_url     = source_url,
+            text_content   = scraped.text,
+            images_markdown= _build_images_markdown(image_files),
+        )
+ 
+    article_data = gemini.generate_article(article_prompt)
+
+    # ── Bước 5: Lưu file backup ──────────────────────────────────────────────
+    file_path = _save_to_file(
+        content    = article_data.get("content_html", ""),
+        output_dir = cfg.output_dir,
+        topic      = parsed.topic,
+        platform   = parsed.platform,
+        schedule   = parsed.schedule_time,
     )
+    logger.info("[5/6] 💾 Lưu file: %s", file_path)
+ 
+    result = PublishResult(file_path=file_path)
 
     # ── Bước 6: Xuất bản ────────────────────────────────────
     logger.info("[6/6] Xuất bản bài viết...")
-
-    # Luôn lưu file .md (backup)
-    file_path = _save_to_file(
-        content=article_data.get("content_html", ""),
-        output_dir=cfg.output_dir,
-        topic=parsed.topic,
-        platform=parsed.platform,
-        schedule=parsed.schedule_time,
-    )
-    logger.info("  → 💾 Lưu file: %s", file_path)
-
-    result = PublishResult(file_path=file_path)
-
-    # Đăng WordPress nếu platform phù hợp
-    if parsed.platform.lower() == "wordpress":
+    platform_lower = parsed.platform.lower()
+    
+    # WordPress
+    if platform_lower == "wordpress":
         wp_result = wp.publish(
-            article_data=article_data,
-            image_files=image_files,
-            schedule_time=parsed.schedule_time,
-            category_names=["Du Lịch"],
-            tag_names=[parsed.topic.title()],
+            article_data   = article_data,
+            image_files    = image_files,
+            schedule_time  = parsed.schedule_time,
+            category_names = ["Du Lịch"],
+            tag_names      = [parsed.topic.title()],
         )
         if wp_result:
             result.wp_post_id  = wp_result["id"]
             result.wp_post_url = wp_result["link"]
             result.wp_status   = wp_result["status"]
+            logger.info("  → ✅ WordPress: %s", result.wp_post_url)
 
     # Webhook notification
     title = article_data.get("seo_title", parsed.topic)
     if webhook_url:
         _notify_webhook(webhook_url, title, file_path)
     
-    platform_lower = parsed.platform.lower()
-    # Chỉ chạy Buffer nếu KHÔNG phải wordpress
-    should_run_buffer = (
-        cfg.buffer.is_valid
-        and platform_lower != "wordpress"
-    )
-    
+    # Buffer (mạng xã hội)
+    should_run_buffer = cfg.buffer.is_valid and platform_lower != "wordpress"
+ 
     if should_run_buffer:
-        # Lọc đúng platform nếu user nói cụ thể,
-        # còn "blog" (default) = không nói gì → đăng tất cả
         buffer_platforms = (
-            [platform_lower]
-            if platform_lower in _BUFFER_PLATFORMS
-            else []   # [] = tất cả channels
+            [platform_lower] if platform_lower in _BUFFER_PLATFORMS else []
         )
-    
         logger.info(
-            "[7/7] Đăng Buffer: %s",
-            ", ".join(buffer_platforms) if buffer_platforms else "tất cả platforms"
+            "[7/7] Buffer: %s",
+            ", ".join(buffer_platforms) if buffer_platforms else "tất cả platforms",
         )
-        
-        # ── Chuẩn bị ảnh ────────────────────────────────────
-        social_image_urls = []
-        if image_files:
-            first = image_files[0]
-            if first.startswith("http"):
-                social_image_urls = [first]
-
-        # ── Build text riêng cho từng platform ──────────────
-        social_texts = build_social_texts( 
-            topic=parsed.topic,
-            title=article_data.get("seo_title", parsed.topic),
-            excerpt=article_data.get("excerpt", ""),
-            wp_url=result.wp_post_url or "",
-            social_captions=article_data.get("social_captions"),  
+ 
+        # Ảnh đính kèm post: nếu có image_files dùng file, không thì bỏ qua
+        social_image_urls = [f for f in image_files if f.startswith("http")][:1]
+ 
+        social_texts = build_social_texts(
+            topic          = parsed.topic,
+            title          = title,
+            excerpt        = article_data.get("excerpt", ""),
+            wp_url         = result.wp_post_url or "",
+            social_captions= article_data.get("social_captions"),
         )
-        scheduled_at = parsed.schedule_time if parsed.schedule_time else None
-        
+        scheduled_at = parsed.schedule_time or None
+ 
         try:
-            buffer = BufferClient(api_key=cfg.buffer.api_key)
+            buffer  = BufferClient(api_key=cfg.buffer.api_key)
             targets = buffer.get_channels_from_env(buffer_platforms)
-            
+ 
             if not targets:
                 logger.warning("  → Không tìm thấy channel nào trong .env")
-                
+ 
             for ch in targets:
-                service = (ch.get("service") or "").lower()
-                post_opts = social_texts.get(service) or social_texts["facebook"]
-
-                attr = _SERVICE_TO_ATTR.get(service)
+                service      = (ch.get("service") or "").lower()
+                post_opts    = social_texts.get(service) or social_texts["facebook"]
+                attr         = _SERVICE_TO_ATTR.get(service)
                 platform_obj = getattr(buffer, attr, None) if attr else None
-
+ 
                 if not platform_obj:
-                    logger.warning("  → Platform '%s' chưa hỗ trợ, bỏ qua", service)
+                    logger.warning("  → '%s' chưa hỗ trợ, bỏ qua", service)
                     continue
-
+ 
                 try:
                     post = platform_obj.create_post(
                         ch["id"],
-                        text=post_opts["text"],
-                        image_urls=social_image_urls or None,
-                        scheduled_at=scheduled_at,
+                        text         = post_opts["text"],
+                        image_urls   = social_image_urls or None,
+                        scheduled_at = scheduled_at,
                     )
                     br = BufferPostResult(
-                        platform=service,
-                        channel_name=ch.get("name", ""),
-                        channel_id=ch["id"],
-                        status="success",
+                        platform=service, channel_name=ch.get("name", ""),
+                        channel_id=ch["id"], status="success",
                         post_id=post.get("id", ""),
                     )
-                    logger.info("  → ✅ [%s] %s — %s", service.upper(), ch.get("name"), post.get("id"))
-
+                    logger.info("  → ✅ [%s] %s", service.upper(), ch.get("name"))
                 except Exception as e:
                     br = BufferPostResult(
-                        platform=service,
-                        channel_name=ch.get("name", ""),
-                        channel_id=ch["id"],
-                        status="error",
-                        error=str(e),
+                        platform=service, channel_name=ch.get("name", ""),
+                        channel_id=ch["id"], status="error", error=str(e),
                     )
                     logger.warning("  → ❌ [%s] %s — %s", service.upper(), ch.get("name"), e)
-
+ 
                 result.buffer_results.append(br)
-
+ 
             succeeded = sum(1 for r in result.buffer_results if r.status == "success")
-            logger.info(
-                "  → Buffer: %d/%d channel thành công",
-                succeeded, len(result.buffer_results)
-            )
+            logger.info("  → Buffer: %d/%d channel thành công",
+                        succeeded, len(result.buffer_results))
         except Exception as e:
             logger.warning("  → Buffer thất bại: %s", e)
+ 
+    elif platform_lower == "wordpress":
+        logger.info("[7/7] Bỏ qua Buffer (chỉ đăng WordPress)")
     else:
-        if platform_lower == "wordpress":
-            logger.info("[7/7] Bỏ qua Buffer (chỉ đăng WordPress)")
-        else:
-            logger.info("[7/7] Bỏ qua Buffer (chưa cấu hình BUFFER_API_KEY)")
-
+        logger.info("[7/7] Bỏ qua Buffer (chưa cấu hình BUFFER_API_KEY)")
+ 
     return result
-
 
 # ── Entry point ──────────────────────────────────────────────
 

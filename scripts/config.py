@@ -71,6 +71,19 @@ class OllamaConfig:
         return f"{self.host}/api/chat"
 
 @dataclass(frozen=True)
+class GoogleDriveAPIConfig:
+    """
+    Config để gọi api.drive.article (PHP service lấy nội dung Google Docs). 
+    """
+    api_url:  str
+    timeout:  int = 30
+    language: str = "vi"
+ 
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.api_url)
+
+@dataclass(frozen=True)
 class AppConfig:
     output_dir: str
     openclaw: OpenClawConfig
@@ -78,6 +91,7 @@ class AppConfig:
     ollama: OllamaConfig
     wordpress: WordPressConfig
     buffer: BufferConfig
+    googledrive: GoogleDriveAPIConfig
 
 def load_config() -> AppConfig:
     """
@@ -111,5 +125,11 @@ def load_config() -> AppConfig:
         ),
         buffer=BufferConfig(
             api_key=os.environ.get("BUFFER_API_KEY", ""),
+        ),
+        
+        googledrive=GoogleDriveAPIConfig(
+            api_url=os.environ.get("GDRIVE_API_URL", ""),
+            timeout=int(os.environ.get("GDRIVE_API_TIMEOUT", "30")),
+            language=os.environ.get("GDRIVE_LANGUAGE", "vi"),
         ),
     )

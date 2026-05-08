@@ -62,7 +62,7 @@ def _detect_platform(text: str) -> str:
 
 
 def _detect_topic(text: str, original: str) -> str:
-    match = re.search(r"(về|tại|ở|du lịch)\s+([^,.\n]+)", text)
+    match = re.search(r"(về|tại|ở|du lịch|bài)\s+([^,.\n]+)", text)
     if not match:
         return original[:30]
     
