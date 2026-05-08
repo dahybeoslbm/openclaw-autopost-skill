@@ -55,13 +55,27 @@ class BufferConfig:
     def is_valid(self) -> bool:
         return bool(self.api_key)
     
-    
+@dataclass(frozen=True)
+class OllamaConfig:
+    api_key: str
+    model: str = "gpt-oss:120b"
+    host: str = "https://ollama.com"
+    timeout: int = 120
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.api_key)
+
+    @property
+    def api_url(self) -> str:
+        return f"{self.host}/api/chat"
 
 @dataclass(frozen=True)
 class AppConfig:
     output_dir: str
     openclaw: OpenClawConfig
     gemini: GeminiConfig
+    ollama: OllamaConfig
     wordpress: WordPressConfig
     buffer: BufferConfig
 
@@ -83,6 +97,11 @@ def load_config() -> AppConfig:
             api_key=os.environ.get("GEMINI_API_KEY", ""),
             model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
             timeout=int(os.environ.get("GEMINI_TIMEOUT", "90")),
+        ),
+        ollama=OllamaConfig(
+            api_key=os.environ.get("OLLAMA_API_KEY", ""),
+            model=os.environ.get("OLLAMA_MODEL", "gpt-oss:120b"),
+            timeout=int(os.environ.get("OLLAMA_TIMEOUT", "120")),
         ),
         wordpress=WordPressConfig(
             site_url=os.environ.get("WP_SITE_URL", ""),

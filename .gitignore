@@ -3,6 +3,7 @@
 *.key
 *.pem
 secrets/
+.claude/worktrees/
 
 # ── Python ──────────────────────────────────────────────────
 __pycache__/

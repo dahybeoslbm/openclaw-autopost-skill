@@ -21,6 +21,8 @@ from services.wordpress import WordPressService
 from services.buffer import BufferClient
 from utils.models    import BufferPostResult
 from services.buffer.social_formatter import build_all as build_social_texts
+
+from datetime import datetime, timezone
 logger = get_logger("blogger")
 
 
@@ -87,7 +89,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     cfg = load_config()
 
     # Khởi tạo services
-    gemini   = GeminiService(cfg.gemini)
+    gemini   = GeminiService(cfg.gemini, ollama_config=cfg.ollama)
     openclaw = OpenClawService(cfg.openclaw)
     wp       = WordPressService(cfg.wordpress)
 
@@ -193,6 +195,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
             wp_url=result.wp_post_url or "",
             social_captions=article_data.get("social_captions"),  
         )
+        scheduled_at = parsed.schedule_time if parsed.schedule_time else None
         
         try:
             buffer = BufferClient(api_key=cfg.buffer.api_key)
@@ -217,6 +220,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
                         ch["id"],
                         text=post_opts["text"],
                         image_urls=social_image_urls or None,
+                        scheduled_at=scheduled_at,
                     )
                     br = BufferPostResult(
                         platform=service,

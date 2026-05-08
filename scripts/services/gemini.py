@@ -1,24 +1,49 @@
 """
 services/gemini.py — Tất cả tương tác với Gemini API.
 """
-from time import time
+from time import sleep
 
 import requests
 import json
-from config import GeminiConfig
+from config import GeminiConfig, OllamaConfig
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 _FALLBACK_ARTICLE = """### Review (Bài viết mẫu — thiếu GEMINI_API_KEY)
-
 Đây là bài viết mẫu được tạo tự động khi chưa cài đặt API Key."""
 
-
+# Các status code nên chuyển sang Ollama thay vì retry tiếp
+_OLLAMA_FALLBACK_STATUSES = {429, 503}
 class GeminiService:
-    def __init__(self, config: GeminiConfig):
+    def __init__(self, config: GeminiConfig, ollama_config: OllamaConfig | None = None):
         self._config = config
+        self._ollama = ollama_config
+        
+ # ── Ollama fallback ──────────────────────────────────────────────────────
+    def _generate_via_ollama(self, prompt: str) -> str:
+        """Gọi Ollama Cloud API, raise nếu thất bại."""
+        if not self._ollama or not self._ollama.is_valid:
+            raise RuntimeError("Ollama chưa được cấu hình.")
 
+        payload = {
+            "model": self._ollama.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        resp = requests.post(
+            url=self._ollama.api_url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._ollama.api_key}",
+            },
+            timeout=self._ollama.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+    
+    
     def generate(self, prompt: str, max_retries: int = 3) -> str:
         if not self._config.is_valid:
             logger.warning("  → GEMINI_API_KEY chưa được cài đặt.")
@@ -39,29 +64,41 @@ class GeminiService:
 
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response else 0
-                if status == 503 and attempt < max_retries:
-                    wait = 2 ** attempt  # 2s, 4s, 8s
-                    logger.warning(
-                        "  → Gemini 503, thử lại lần %d/%d sau %ds...",
-                        attempt, max_retries, wait
-                    )
-                    time.sleep(wait)
-                    continue
-                logger.error("  → Gemini HTTP error: %s", e)
+
+                if status in _OLLAMA_FALLBACK_STATUSES:
+                    logger.warning("  → Gemini %d, chuyển sang Ollama fallback...", status)
+                    break  # ← thoát loop, xuống xử lý Ollama bên dưới
+
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    logger.warning("  → Gemini HTTP %d, thử lại %d/%d sau %ds...",
+                                status, attempt, max_retries, wait)
+                    sleep(wait)
+                else:
+                    logger.error("  → Gemini HTTP error: %s", e)
+                    break
 
             except requests.Timeout:
                 if attempt < max_retries:
-                    logger.warning("  → Gemini timeout, thử lại lần %d/%d...", attempt, max_retries)
-                    time.sleep(2 ** attempt)
-                    continue
-                logger.error("  → Gemini timeout sau %d lần thử", max_retries)
+                    logger.warning("  → Gemini timeout, thử lại %d/%d...", attempt, max_retries)
+                    sleep(2 ** attempt)
+                else:
+                    logger.error("  → Gemini timeout sau %d lần thử", max_retries)
+                    break
 
             except (KeyError, IndexError) as e:
                 logger.error("  → Gemini parse error: %s", e)
+                break
             except Exception as e:
                 logger.error("  → Gemini unknown error: %s", e)
+                break
 
-            break  # lỗi không retry được → thoát
+        # ── Ollama fallback — luôn thử sau khi Gemini thất bại ──────────────
+        logger.warning("  → Thử Ollama fallback...")
+        try:
+            return self._generate_via_ollama(prompt)
+        except Exception as e:
+            logger.error("  → Ollama fallback thất bại: %s", e)
 
         return "Lỗi tạo nội dung."
 

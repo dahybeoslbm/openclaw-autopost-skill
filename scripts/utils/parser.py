@@ -2,9 +2,13 @@
 utils/parser.py — Phân tích câu lệnh tự nhiên (NLU) từ người dùng.
 Tách riêng để dễ nâng cấp sau (ví dụ: thay regex bằng LLM).
 """
+from datetime import datetime, timedelta
 import re
 from utils.models import ParsedRequest
 from utils.logger import get_logger
+
+
+
 
 logger = get_logger(__name__)
 
@@ -27,13 +31,26 @@ _PLATFORM_KEYWORDS: dict[str, list[str]] = {
 
 # ── Mapping từ khoá → schedule ─────────────────────────────
 def _detect_schedule(text: str) -> str:
-    if "ngày mai" in text:
-        return "Ngày mai"
-    if "hôm nay" in text:
-        return "Hôm nay"
-    m = re.search(r"(\d+)\s*phút nữa", text)
+    """
+    Trả về ISO 8601 UTC string nếu user nói thời gian,
+    trả về "" nếu không nói gì (= đăng ngay).
+    """
+    now = datetime.utcnow()
+
+    # "30 phút nữa", "2 tiếng nữa"
+    m = re.search(r"(\d+)\s*phút\s*nữa", text)
     if m:
-        return f"Sau {m.group(1)} phút"
+        return (now + timedelta(minutes=int(m.group(1)))).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    m = re.search(r"(\d+)\s*tiếng\s*nữa", text)
+    if m:
+        return (now + timedelta(hours=int(m.group(1)))).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # "ngày mai" = +24h cùng giờ
+    if "ngày mai" in text:
+        return (now + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # "hôm nay" hoặc không nói gì → đăng ngay
     return ""
 
 
