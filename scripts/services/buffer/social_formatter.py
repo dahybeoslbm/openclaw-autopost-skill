@@ -30,11 +30,14 @@ def for_twitter(caption: str, url: str) -> dict:
 
 
 def for_threads(caption: str, url: str) -> dict:
-    """500 ký tự/post. Ghép link nếu còn chỗ."""
     suffix = f"\n\n{url}" if url else ""
-    max_caption = 500 - len(suffix)
-    text = f"{caption[:max_caption]}{suffix}"
-    return {"text": text.strip()}
+    limit = 470
+    max_caption = limit - len(suffix)
+    text = f"{caption[:max_caption]}{suffix}".strip()
+    # Hard cap — Threads API reject nếu > 500
+    if len(text) > 500:
+        text = text[:497] + "..."
+    return {"text": text}
 
 
 def for_tiktok(caption: str) -> dict:

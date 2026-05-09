@@ -22,8 +22,6 @@ from utils.logger import get_logger
 from utils.models import PublishResult
 from utils.parser import parse_request
 from services.gemini import GeminiService
-from services.openclaw import OpenClawService
-from services.image import render_images_parallel, parse_image_prompts
 from services.wordpress import WordPressService
 from services.googledrive import GoogleDriveService, DriveArticle
 
@@ -93,41 +91,33 @@ _SERVICE_TO_ATTR = {
 def _resolve_source(
     topic: str,
     cfg,
-    openclaw: OpenClawService,
-) -> tuple[str, ScrapedContent, DriveArticle | None]:
+) ->  DriveArticle | None:
     """
-    Lấy nội dung nguồn theo ưu tiên:
-      1. Google Drive (tìm doc tên = topic, lấy file mới nhất)
-      2. OpenClaw scraping (fallback)
- 
-    Returns: (source_url, scraped, drive_article)
+    Tìm Google Doc theo topic.
+    Trả về DriveArticle nếu tìm thấy, None nếu không có.
+    Không fallback về OpenClaw — nội dung phải do người viết.
     """
-    # ── Ưu tiên 1: Google Drive ───────────────────────────────────────────────
-    if cfg.googledrive.is_valid:
-        try:
-            drive_service = GoogleDriveService.from_config(cfg.googledrive)
-            drive_article = drive_service.fetch_article(
-                topic=topic,
-                language=cfg.googledrive.language,
-            )
-            if drive_article:
-                source_url = drive_article.document_url or \
-                             f"google-docs://{drive_article.document_id}"
-                # ScrapedContent dùng để render ảnh (bước 4)
-                scraped = ScrapedContent(
-                    text=drive_article.plain_text(),
-                    images=[],        # ảnh từ Drive được xử lý riêng qua inline_images
-                    source_url=source_url,
-                )
-                return source_url, scraped, drive_article
-        except RuntimeError as exc:
-            logger.warning("  → [Drive] Không khả dụng, fallback về OpenClaw: %s", exc)
+    if not cfg.googledrive.is_valid:
+        logger.error("  → [Drive] GDRIVE_API_URL chưa cấu hình trong .env")
+        return None
+
+    try:
+        drive_service = GoogleDriveService.from_config(cfg.googledrive)
+        drive_article = drive_service.fetch_article(
+            topic=topic,
+            language=cfg.googledrive.language,
+        )
+        if drive_article:
+            logger.info("  → [Drive] ✅ Tìm thấy: \"%s\"", drive_article.title)
+            return drive_article
+
+        logger.warning("  → [Drive] Không tìm thấy doc nào cho topic: \"%s\"", topic)
+        return None
+
+    except RuntimeError as exc:
+        logger.error("  → [Drive] Lỗi kết nối: %s", exc)
+        return None
  
-    # ── Fallback 2: OpenClaw ──────────────────────────────────────────────────
-    logger.info("  → [OpenClaw] Scraping web cho topic: %s", topic)
-    source_url = openclaw.search(topic) or "https://vnexpress.net/du-lich"
-    scraped    = openclaw.fetch(source_url)
-    return source_url, scraped, None
  
 
 # ── Main workflow ────────────────────────────────────────────
@@ -141,49 +131,51 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
 
     # Khởi tạo services
     gemini   = GeminiService(cfg.gemini, ollama_config=cfg.ollama)
-    openclaw = OpenClawService(cfg.openclaw)
     wp       = WordPressService(cfg.wordpress)
 
     # ── Bước 1: Parse yêu cầu ───────────────────────────────
     parsed = parse_request(user_prompt)
 
-    # ── Bước 2: Tìm kiếm nguồn ──────────────────────────────
-    logger.info("[2/6] Lấy nội dung nguồn...")
-    source_url, scraped, drive_article = _resolve_source(
-        topic=parsed.topic, cfg=cfg, openclaw=openclaw
-    )
+    # ── Bước 2: Tìm tài liệu Google Drive ───────────────────────────────────
+    logger.info("[2/6] Tìm tài liệu Google Drive...")
+    drive_article = _resolve_source(topic=parsed.topic, cfg=cfg)
 
-    # ── Bước 3: Render ảnh ───────────────────────────────────────────────────
-    # Khi có Google Doc với inline_images → dùng trực tiếp, không cần AI render
-    # Khi fallback OpenClaw → dùng AI render như cũ
-    if drive_article and drive_article.has_images():
-        logger.info("[3/6] Dùng %d ảnh từ Google Docs", drive_article.image_count())
-        # inline_images là dict id→base64, đã được PHP lấy về
-        # Gemini sẽ nhúng vào HTML qua mapping trong prompt
-        image_files: list[str] = []   # không cần file riêng, ảnh đã trong doc_json
- 
-    else:
-        logger.info("[3/6] Render ảnh AI từ nội dung...")
-        alts = [img.alt for img in scraped.images if img.alt] or [parsed.topic] * 3
-        raw_prompts = gemini.generate(
-            gemini.build_image_prompts(alts[:3], parsed.topic)
+    if not drive_article:
+        msg = (
+            f"❌ Không tìm thấy tài liệu nào cho topic: \"{parsed.topic}\".\n"
+            f"Vui lòng tạo Google Doc với tên khớp topic rồi thử lại."
         )
-        prompts     = parse_image_prompts(raw_prompts, parsed.topic, count=len(alts[:3]))
-        image_files = render_images_parallel(prompts, scraped.images)
+        logger.error(msg)
+        # Webhook thông báo thất bại nếu có
+        if webhook_url:
+            try:
+                requests.post(webhook_url, json={"text": msg}, timeout=5)
+            except Exception:
+                pass
+        return PublishResult(file_path="", error=msg)
+
+    # ── Bước 3: Ảnh từ Drive (không render AI) ───────────────────────────────
+    logger.info("[3/6] Dùng %d ảnh từ Google Docs", drive_article.image_count())
+    image_files: list[str] = []   # ảnh đã nhúng trong HTML, không cần file riêng
 
     # ── Bước 4: Tạo nội dung HTML ────────────────────────────────────────────
     logger.info("[4/6] Chuyển đổi nội dung (Gemini)...")
-    
-    if drive_article:
-        # ─── CHỈ CONVERT FORMAT — không viết thêm nội dung ───────────────────
-        article_data = {
-            "seo_title":        drive_article.title,
-            "meta_description": drive_article.plain_text()[:160],
-            "focus_keyword":    parsed.topic,
-            "excerpt":          drive_article.plain_text()[:300],
-            "content_html":     drive_article.content,
-            "social_captions":  {},
-        }
+    plain = drive_article.plain_text()
+    social_captions = gemini.generate_social_captions(
+        topic      = parsed.topic,
+        title      = drive_article.title,
+        plain_text = plain,
+    )
+    logger.info("  → social_captions: %d platforms", len(social_captions))
+
+    article_data = {
+        "seo_title":        drive_article.title,
+        "meta_description": plain[:160],
+        "focus_keyword":    parsed.topic,
+        "excerpt":          plain[:300],
+        "content_html":     drive_article.content,   # Drive, không thay đổi
+        "social_captions":  social_captions,
+    }
 
     # ── Bước 5: Lưu file backup ──────────────────────────────────────────────
     file_path = _save_to_file(

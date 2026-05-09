@@ -262,7 +262,12 @@ class WordPressService:
         ]
 
         # 4. Xác định status
-        wp_status = "draft" if schedule_time and schedule_time != "Hôm nay" else "publish"
+        if schedule_time:
+            wp_status = "future"
+            payload_extra = {"date_gmt": schedule_time}
+        else:
+            wp_status = "publish"
+            payload_extra = {}
 
         # 5. Build payload
         payload: dict = {
@@ -271,6 +276,7 @@ class WordPressService:
             "status"    : wp_status,
             "categories": category_ids,
             "tags"      : tag_ids,
+            **payload_extra,
         }
         if featured_media_id:
             payload["featured_media"] = featured_media_id
