@@ -176,29 +176,14 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     
     if drive_article:
         # ─── CHỈ CONVERT FORMAT — không viết thêm nội dung ───────────────────
-        logger.info("  → Gemini: convert Google Docs JSON → SEO HTML")
-        article_prompt = gemini.build_article_prompt(
-            topic          = parsed.topic,
-            platform       = parsed.platform,
-            source_url     = drive_article.document_url,
-            text_content   = drive_article.content,
-            images_markdown= "",
-            source_is_html = True,
-            doc_title      = drive_article.title,
-            doc_keywords   = drive_article.keywords,
-        )
-    else:
-        # ─── VIẾT BÀI — fallback khi không có doc ────────────────────────────
-        logger.info("  → Gemini: viết bài từ nguồn web")
-        article_prompt = gemini.build_article_prompt(
-            topic          = parsed.topic,
-            platform       = parsed.platform,
-            source_url     = source_url,
-            text_content   = scraped.text,
-            images_markdown= _build_images_markdown(image_files),
-        )
- 
-    article_data = gemini.generate_article(article_prompt)
+        article_data = {
+            "seo_title":        drive_article.title,
+            "meta_description": drive_article.plain_text()[:160],
+            "focus_keyword":    parsed.topic,
+            "excerpt":          drive_article.plain_text()[:300],
+            "content_html":     drive_article.content,
+            "social_captions":  {},
+        }
 
     # ── Bước 5: Lưu file backup ──────────────────────────────────────────────
     file_path = _save_to_file(
