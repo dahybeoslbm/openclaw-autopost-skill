@@ -26,10 +26,24 @@ class GeminiService:
         if not self._ollama or not self._ollama.is_valid:
             raise RuntimeError("Ollama chưa được cấu hình.")
 
+        system_msg = (
+            "You are a JSON generator. "
+            "Return ONLY valid JSON with no markdown fences, "
+            "no explanations, no extra text. "
+            "All HTML must be inside JSON string values with properly escaped quotes."
+        )
+
         payload = {
             "model": self._ollama.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt}
+                ],
             "stream": False,
+            "options": {                                    
+                "temperature": 0.1,
+                "top_p": 0.9,
+            },
         }
         resp = requests.post(
             url=self._ollama.api_url,
@@ -103,23 +117,65 @@ class GeminiService:
         return "Lỗi tạo nội dung."
 
     def generate_article(self, prompt: str) -> dict:
-        raw = self.generate(prompt)
-        if not raw:
-            return {"seo_title": "", "meta_description": "",
-                "focus_keyword": "", "excerpt": "", "content": ""}
-        try:
-            cleaned = raw.strip()
-            if "```" in cleaned:
-                for part in cleaned.split("```"):
-                    part = part.lstrip("json").strip()
+            raw = self.generate(prompt)
+            
+            _EMPTY = {"seo_title": "", "meta_description": "",
+                    "focus_keyword": "", "excerpt": "", "content_html": ""}
+            if not raw:
+                return _EMPTY
+            
+            result = None
+            
+            try:
+                cleaned = raw.strip()
+
+                # Bóc fence ```json ... ``` hoặc ``` ... ```
+                if "```" in cleaned:
+                    for part in cleaned.split("```"):
+                        part = part.lstrip("json").strip()
+                        if not part:
+                            continue
+                        try:
+                            return json.loads(part)
+                            break
+                        except json.JSONDecodeError:
+                            continue
+
+                if result is None:
                     try:
-                        return json.loads(part)
+                        result = json.loads(cleaned)
                     except json.JSONDecodeError:
-                        continue
-            return json.loads(cleaned)
-        except (json.JSONDecodeError, ValueError):
-            return {"seo_title": "", "meta_description": "",
-                "focus_keyword": "", "excerpt": "", "content": raw}
+                        pass
+                    
+                if result is None:
+                    start = cleaned.find("{")
+                    end   = cleaned.rfind("}") + 1
+                    if start != -1 and end > start:
+                        try:
+                            result = json.loads(cleaned[start:end])
+                        except json.JSONDecodeError:
+                            pass
+                        
+            except (ValueError, TypeError):
+                pass
+
+            # Fallback: trả content thô
+            if result is None:
+                result = {**_EMPTY, "content_html": f"<p>{raw}</p>"}
+                
+            # Chuẩn hoá key: một số model trả "content" thay vì "content_html"
+            if "content_html" not in result and "content" in result:
+                result["content_html"] = result.pop("content")
+                
+            # Post-process: fix lỗi Ollama re-escape
+            html = result.get("content_html", "")
+            if html:
+                html = html.replace('\\"', '"')
+                html = html.replace('\\n', '\n')
+                result["content_html"] = html
+
+            return result
+
 
     def build_article_prompt(
         self,
@@ -133,11 +189,16 @@ class GeminiService:
         doc_title: str = "",
         doc_keywords: list[str] | None = None,
     ) -> str:
-        image_instruction = (
-            f"Chèn các ảnh sau vào bài viết ở vị trí phù hợp:\n{images_markdown}"
-            if images_markdown
-            else "KHÔNG tự ý chèn ảnh vào bài viết vì hiện không có ảnh."
-        )
+        if source_is_html:
+            # Ảnh đã có sẵn trong HTML gốc từ Google Docs — giữ nguyên, không xóa
+            image_instruction = (
+                "Giữ NGUYÊN tất cả thẻ <img> trong nội dung gốc, "
+                "bao gồm src, style, alt. KHÔNG xóa, KHÔNG thay đổi bất kỳ thẻ <img> nào."
+            )
+        elif images_markdown:
+            image_instruction = f"Chèn các ảnh sau vào bài viết ở vị trí phù hợp:\n{images_markdown}"
+        else:
+            image_instruction = "KHÔNG tự ý chèn ảnh vào bài viết vì hiện không có ảnh."
         
         keyword_hint = ""
         if doc_keywords:
