@@ -42,6 +42,7 @@ class BufferPostResult:
 class PublishResult:
     """Kết quả sau khi xuất bản bài viết."""
     file_path: str
+    error: str = ""  
     wp_post_id: Optional[int] = None
     wp_post_url: Optional[str] = None
     wp_status: Optional[str] = None
@@ -54,3 +55,7 @@ class PublishResult:
     @property
     def posted_to_buffer(self) -> bool:
         return any(r.status == "success" for r in self.buffer_results)
+    
+    @property
+    def has_error(self) -> bool: 
+        return bool(self.error)
