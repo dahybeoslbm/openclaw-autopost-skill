@@ -59,7 +59,10 @@ class BasePlatform:
             payload["assets"] = assets
         if metadata:
             payload["metadata"] = metadata
-
+            
+        import json as _json
+        print(">>> BUFFER PAYLOAD:", _json.dumps(payload, ensure_ascii=False, indent=2))
+        
         data   = self._request(_CREATE_POST_MUTATION, {"input": payload}, channel_id)
         result = (data or {}).get("createPost")
 
