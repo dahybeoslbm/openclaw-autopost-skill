@@ -157,7 +157,19 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     # ── Bước 3: Ảnh từ Drive (không render AI) ───────────────────────────────
     logger.info("[3/6] Dùng %d ảnh từ Google Docs", drive_article.image_count())
     image_files: list[str] = []   # ảnh đã nhúng trong HTML, không cần file riêng
+    
+    # Lấy URL ảnh từ content_blocks để đăng social media qua Buffer
+    import re as _img_re
+    from urllib.parse import urlparse as _urlparse
+    _api_parsed  = _urlparse(cfg.googledrive.api_url)
+    _actual_base = f"{_api_parsed.scheme}://{_api_parsed.netloc}"
 
+    drive_image_urls: list[str] = []
+    for block in drive_article.content_blocks:
+        if block.get("type") == "image" and block.get("url"):
+            url = _img_re.sub(r'https?://localhost(:\d+)?', _actual_base, block["url"])
+            drive_image_urls.append(url)
+            
     # ── Bước 4: Tạo nội dung HTML ────────────────────────────────────────────
     logger.info("[4/6] Chuyển đổi nội dung (Gemini)...")
     plain = drive_article.plain_text()
@@ -226,7 +238,8 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         )
  
         # Ảnh đính kèm post: nếu có image_files dùng file, không thì bỏ qua
-        social_image_urls = [f for f in image_files if f.startswith("http")][:1]
+        # social_image_urls = [f for f in image_files if f.startswith("http")][:1]
+        social_image_urls = drive_image_urls[:1]
  
         social_texts = build_social_texts(
             topic          = parsed.topic,
