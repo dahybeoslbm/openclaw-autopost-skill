@@ -1,6 +1,7 @@
 """
 services/gemini.py — Tất cả tương tác với Gemini API.
 """
+import random
 from time import sleep
 
 import requests
@@ -37,9 +38,10 @@ class GeminiService:
                 {"role": "user", "content": prompt}
                 ],
             "stream": False,
-            "options": {                                    
-                "temperature": 0.1,
+            "options": {
+                "temperature": 0.85,
                 "top_p": 0.9,
+                "seed": random.randint(1, 99999),  # ← mỗi lần chạy ra caption khác nhau
             },
         }
         resp = requests.post(
