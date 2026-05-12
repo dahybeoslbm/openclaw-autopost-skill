@@ -55,15 +55,44 @@ class BufferConfig:
     def is_valid(self) -> bool:
         return bool(self.api_key)
     
-    
+@dataclass(frozen=True)
+class OllamaConfig:
+    api_key: str
+    model: str = "gpt-oss:120b"
+    host: str = "https://ollama.com"
+    timeout: int = 120
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.api_key)
+
+    @property
+    def api_url(self) -> str:
+        return f"{self.host}/api/chat"
+
+@dataclass(frozen=True)
+class GoogleDriveAPIConfig:
+    """
+    Config để gọi api.drive.article (PHP service lấy nội dung Google Docs). 
+    """
+    api_url:  str
+    timeout:  int = 30
+    language: str = "vi"
+ 
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.api_url)
 
 @dataclass(frozen=True)
 class AppConfig:
     output_dir: str
+    chat_id:    str
     openclaw: OpenClawConfig
     gemini: GeminiConfig
+    ollama: OllamaConfig
     wordpress: WordPressConfig
     buffer: BufferConfig
+    googledrive: GoogleDriveAPIConfig
 
 def load_config() -> AppConfig:
     """
@@ -72,6 +101,7 @@ def load_config() -> AppConfig:
     """
     return AppConfig(
         output_dir=os.environ.get("OUTPUT_DIR", "/app/output"),
+        chat_id=os.environ.get("CHAT_ID", ""),
         openclaw=OpenClawConfig(
             bin_path=os.environ.get(
                 "OPENCLAW_BIN",
@@ -84,6 +114,11 @@ def load_config() -> AppConfig:
             model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
             timeout=int(os.environ.get("GEMINI_TIMEOUT", "90")),
         ),
+        ollama=OllamaConfig(
+            api_key=os.environ.get("OLLAMA_API_KEY", ""),
+            model=os.environ.get("OLLAMA_MODEL", "gpt-oss:120b"),
+            timeout=int(os.environ.get("OLLAMA_TIMEOUT", "120")),
+        ),
         wordpress=WordPressConfig(
             site_url=os.environ.get("WP_SITE_URL", ""),
             username=os.environ.get("WP_USERNAME", ""),
@@ -92,5 +127,10 @@ def load_config() -> AppConfig:
         ),
         buffer=BufferConfig(
             api_key=os.environ.get("BUFFER_API_KEY", ""),
+        ),
+        googledrive=GoogleDriveAPIConfig(
+            api_url=os.environ.get("GDRIVE_API_URL", ""),
+            timeout=int(os.environ.get("GDRIVE_API_TIMEOUT", "30")),
+            language=os.environ.get("GDRIVE_LANGUAGE", "vi"),
         ),
     )

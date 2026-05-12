@@ -1,6 +1,7 @@
 """
 platforms/base.py — Lớp nền cho tất cả platform Buffer.
 """
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 from utils.media import resolve_assets
 
@@ -33,11 +34,20 @@ class BasePlatform:
         if not channel_id:
             raise ValueError("channel_id là bắt buộc")
 
+        if scheduled_at:
+                mode   = "customScheduled"
+                due_at = scheduled_at
+        else:
+                # Không có mode "now" — dùng customScheduled với thời gian hiện tại
+                mode   = "customScheduled"
+                due_at = (datetime.now(timezone.utc) + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
         payload: dict = {
             "channelId":      channel_id,
             "text":           text,
             "schedulingType": "automatic",
-            "mode":           "customScheduled" if scheduled_at else "addToQueue",
+            "mode":           mode,
+            "dueAt":          due_at,
         }
         if scheduled_at:
             payload["dueAt"] = scheduled_at
@@ -49,7 +59,10 @@ class BasePlatform:
             payload["assets"] = assets
         if metadata:
             payload["metadata"] = metadata
-
+            
+        import json as _json
+        print(">>> BUFFER PAYLOAD:", _json.dumps(payload, ensure_ascii=False, indent=2))
+        
         data   = self._request(_CREATE_POST_MUTATION, {"input": payload}, channel_id)
         result = (data or {}).get("createPost")
 

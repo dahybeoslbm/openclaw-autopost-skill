@@ -1,24 +1,62 @@
 """
 services/gemini.py — Tất cả tương tác với Gemini API.
 """
-from time import time
+import random
+from time import sleep
 
 import requests
 import json
-from config import GeminiConfig
+from config import GeminiConfig, OllamaConfig
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_FALLBACK_ARTICLE = """### Review (Bài viết mẫu — thiếu GEMINI_API_KEY)
-
-Đây là bài viết mẫu được tạo tự động khi chưa cài đặt API Key."""
-
-
+# Các status code nên chuyển sang Ollama thay vì retry tiếp
+_OLLAMA_FALLBACK_STATUSES = {429, 503}
 class GeminiService:
-    def __init__(self, config: GeminiConfig):
+    def __init__(self, config: GeminiConfig, ollama_config: OllamaConfig | None = None):
         self._config = config
+        self._ollama = ollama_config
+        
+ # ── Ollama fallback ──────────────────────────────────────────────────────
+    def _generate_via_ollama(self, prompt: str) -> str:
+        """Gọi Ollama Cloud API, raise nếu thất bại."""
+        if not self._ollama or not self._ollama.is_valid:
+            raise RuntimeError("Ollama chưa được cấu hình.")
 
+        system_msg = (
+            "You are a JSON generator. "
+            "Return ONLY valid JSON with no markdown fences, "
+            "no explanations, no extra text. "
+            "All HTML must be inside JSON string values with properly escaped quotes."
+        )
+
+        payload = {
+            "model": self._ollama.model,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt}
+                ],
+            "stream": False,
+            "options": {
+                "temperature": 0.85,
+                "top_p": 0.9,
+                "seed": random.randint(1, 99999),  # ← mỗi lần chạy ra caption khác nhau
+            },
+        }
+        resp = requests.post(
+            url=self._ollama.api_url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._ollama.api_key}",
+            },
+            timeout=self._ollama.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+    
+    
     def generate(self, prompt: str, max_retries: int = 3) -> str:
         if not self._config.is_valid:
             logger.warning("  → GEMINI_API_KEY chưa được cài đặt.")
@@ -39,117 +77,107 @@ class GeminiService:
 
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response else 0
-                if status == 503 and attempt < max_retries:
-                    wait = 2 ** attempt  # 2s, 4s, 8s
-                    logger.warning(
-                        "  → Gemini 503, thử lại lần %d/%d sau %ds...",
-                        attempt, max_retries, wait
-                    )
-                    time.sleep(wait)
-                    continue
-                logger.error("  → Gemini HTTP error: %s", e)
+
+                if status in _OLLAMA_FALLBACK_STATUSES:
+                    logger.warning("  → Gemini %d, chuyển sang Ollama fallback...", status)
+                    break  # ← thoát loop, xuống xử lý Ollama bên dưới
+
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    logger.warning("  → Gemini HTTP %d, thử lại %d/%d sau %ds...",
+                                status, attempt, max_retries, wait)
+                    sleep(wait)
+                else:
+                    logger.error("  → Gemini HTTP error: %s", e)
+                    break
 
             except requests.Timeout:
                 if attempt < max_retries:
-                    logger.warning("  → Gemini timeout, thử lại lần %d/%d...", attempt, max_retries)
-                    time.sleep(2 ** attempt)
-                    continue
-                logger.error("  → Gemini timeout sau %d lần thử", max_retries)
+                    logger.warning("  → Gemini timeout, thử lại %d/%d...", attempt, max_retries)
+                    sleep(2 ** attempt)
+                else:
+                    logger.error("  → Gemini timeout sau %d lần thử", max_retries)
+                    break
 
             except (KeyError, IndexError) as e:
                 logger.error("  → Gemini parse error: %s", e)
+                break
             except Exception as e:
                 logger.error("  → Gemini unknown error: %s", e)
+                break
 
-            break  # lỗi không retry được → thoát
+        # ── Ollama fallback — luôn thử sau khi Gemini thất bại ──────────────
+        logger.warning("  → Thử Ollama fallback...")
+        try:
+            return self._generate_via_ollama(prompt)
+        except Exception as e:
+            logger.error("  → Ollama fallback thất bại: %s", e)
 
         return "Lỗi tạo nội dung."
 
-    def generate_article(self, prompt: str) -> dict:
+
+    def build_social_captions_prompt(self, topic: str, title: str, plain_text: str) -> str:
+        """Prompt nhẹ — CHỈ sinh social_captions từ plain text. Không format HTML."""
+        excerpt = plain_text[:8000]
+        return f"""
+Bạn là chuyên gia social media. Đọc nội dung bài viết dưới đây và viết caption phù hợp cho từng nền tảng.
+
+TIÊU ĐỀ: {title}
+CHỦ ĐỀ: {topic}
+
+NỘI DUNG:
+{excerpt}
+
+QUY TẮC: Chỉ tóm tắt, trích ý từ nội dung gốc — KHÔNG bịa thêm thông tin.
+
+Trả về JSON hợp lệ, không thêm text ngoài JSON:
+{{
+  "facebook":        "40-80 ký tự. Câu hấp dẫn, 2-3 emoji, 2 hashtag.",
+  "instagram":       "Dòng đầu hook dưới 125 ký tự. Xuống dòng. 2-3 câu storytelling. Xuống dòng. 3-5 hashtag. Kết: 📍 Link in bio",
+  "twitter":         "Tối đa 80 ký tự. Punchy, 1 hashtag.",
+  "threads":         "Tối đa 500 ký tự. Dòng đầu tiên là tiêu đề/hook ngắn gọn phản ánh chủ đề bài. Tiếp theo liệt kê TẤT CẢ ý chính, mỗi ý 1 dòng (emoji + nội dung cốt lõi). Nếu còn dư ký tự thì thêm chi tiết phụ. Kết bằng 1 câu CTA. KHÔNG hashtag. KHÔNG in nhãn hay tiêu đề phần.",
+  "tiktok":          "Hook câu hỏi hoặc fact bất ngờ. 150-250 ký tự. 3-5 hashtag trending.",
+  "linkedin":        "Mở bằng insight. 700-1000 ký tự, chia đoạn ngắn. 3-4 hashtag. Kết bằng câu hỏi.",
+  "pinterest":       "150-250 ký tự inspirational, bắt đầu bằng động từ. Không hashtag.",
+  "bluesky":         "200-270 ký tự. Direct, witty, không hashtag.",
+  "mastodon":        "300-400 ký tự. 3-4 hashtag du lịch.",
+  "google_business": "300-500 ký tự giới thiệu địa điểm. CTA rõ ràng."
+}}
+""".strip()
+
+    def generate_social_captions(self, topic: str, title: str, plain_text: str) -> dict:
+        """Sinh social_captions từ plain text. Trả về dict (rỗng nếu thất bại)."""
+        prompt = self.build_social_captions_prompt(topic, title, plain_text)
         raw = self.generate(prompt)
-        if not raw:
-            return {"seo_title": "", "meta_description": "",
-                "focus_keyword": "", "excerpt": "", "content": ""}
+        if not raw or "Lỗi" in raw:
+            return {}
+
         try:
             cleaned = raw.strip()
             if "```" in cleaned:
                 for part in cleaned.split("```"):
                     part = part.lstrip("json").strip()
+                    if not part:
+                        continue
                     try:
                         return json.loads(part)
                     except json.JSONDecodeError:
                         continue
-            return json.loads(cleaned)
-        except (json.JSONDecodeError, ValueError):
-            return {"seo_title": "", "meta_description": "",
-                "focus_keyword": "", "excerpt": "", "content": raw}
 
-    def build_article_prompt(
-        self,
-        topic: str,
-        platform: str,
-        source_url: str,
-        text_content: str,
-        images_markdown: str,
-    ) -> str:
-        image_instruction = (
-            f"Chèn các ảnh sau vào bài viết ở vị trí phù hợp:\n{images_markdown}"
-            if images_markdown
-            else "KHÔNG tự ý chèn ảnh vào bài viết vì hiện không có ảnh."
-        )
-        return f"""
-        Bạn là Travel Blogger SEO chuyên nghiệp.
-        Viết bài review du lịch về: "{topic}". Nền tảng: {platform}.
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                pass
 
-        YÊU CẦU HTML (bắt buộc tuân theo):
-        - KHÔNG viết thẻ <html>, <head>, <body> — chỉ viết phần content bên trong
-        - KHÔNG dùng <h1> (WordPress tự tạo từ seo_title)
-        - Dùng <h2> cho section chính, <h3> cho mục con
-        - Dùng <p> cho đoạn văn, KHÔNG để text trần không có thẻ
-        - Dùng <strong> cho từ khoá quan trọng
-        - Dùng <blockquote> cho tips/lưu ý nổi bật
-        - Dùng <ul><li> hoặc <ol><li> cho danh sách
-        - {image_instruction}
+            start = cleaned.find("{")
+            end   = cleaned.rfind("}") + 1
+            if start != -1 and end > start:
+                try:
+                    return json.loads(cleaned[start:end])
+                except json.JSONDecodeError:
+                    pass
 
-        CẤU TRÚC BÀI (theo đúng thứ tự):
-        <p>Đoạn mở đầu hấp dẫn, có từ khoá chính...</p>
-        <h2>Tổng quan về {topic}</h2>
-        <h2>Những điểm đến không thể bỏ qua</h2>
-        <h2>Ẩm thực & Đặc sản địa phương</h2>
-        <h2>Kinh nghiệm di chuyển & Lưu trú</h2>
-        <h2>Lịch trình gợi ý</h2>
-        <h2>Kết luận</h2>
+        except Exception as e:
+            logger.warning("  → parse social_captions thất bại: %s", e)
 
-        Nguồn tham khảo: {source_url}
-        Nội dung tham khảo: {text_content[:2000]}
-
-        Trả về JSON hợp lệ, không thêm text ngoài JSON:
-        {{
-        "seo_title": "50-60 ký tự, có từ khoá",
-        "meta_description": "150-160 ký tự, có call-to-action",
-        "focus_keyword": "từ khoá chính VD: du lịch {topic}",
-        "excerpt": "2-3 câu tóm tắt hiển thị ngoài trang chủ",
-        "content_html": "<p>Toàn bộ nội dung HTML ở đây</p>",
-        "social_captions": {{
-            "facebook":  "40-80 ký tự. Câu hấp dẫn về {topic}, kèm 2-3 emoji, 2 hashtag. Không cần link (sẽ thêm sau).",
-            "instagram": "Dòng đầu hook mạnh (dưới 125 ký tự, người đọc thấy ngay không cần bấm more). Xuống dòng. 2-3 câu storytelling ngắn. Xuống dòng. 3-5 hashtag liên quan. Kết bằng: 📍 Link in bio",
-            "twitter":   "Tối đa 80 ký tự plain text (link sẽ thêm riêng +23 ký tự). Punchy, có 1 hashtag.",
-            "threads": "Tối đa 450 ký tự. Tóm tắt 3-4 điểm nổi bật NHẤT về {topic} (điểm đến, ẩm thực, trải nghiệm). Mỗi điểm 1 dòng, dùng emoji bullet (✨🍜🏔️). Kết bằng 1 câu CTA ngắn. KHÔNG kể chuyện dài, KHÔNG dùng hashtag.",
-            "tiktok":    "Dòng đầu hook câu hỏi hoặc fact bất ngờ về {topic}. 150-250 ký tự tổng. 3-5 hashtag trending du lịch Việt Nam. Tone trẻ trung casual.",
-            "linkedin":  "Mở đầu bằng insight hoặc câu hỏi chuyên sâu về du lịch {topic}. 700-1000 ký tự. Chia đoạn ngắn. Personal story angle. 3-4 hashtag chuyên nghiệp. Kết bằng câu hỏi mời thảo luận.",
-            "pinterest": "150-250 ký tự mô tả hình ảnh và trải nghiệm tại {topic}. Ngôn ngữ inspirational, giàu keyword tự nhiên (không dùng hashtag). Bắt đầu bằng động từ hành động.",
-            "bluesky":   "200-270 ký tự (link card sẽ thêm riêng). Direct, witty, không hashtag. Tone authentic.",
-            "mastodon":  "300-400 ký tự. Mô tả {topic} chi tiết. 3-4 hashtag du lịch Việt Nam để discovery.",
-            "google_business": "300-500 ký tự. Giới thiệu {topic} như local business recommendation. Có CTA rõ ràng. Dùng từ khoá địa điểm tự nhiên."
-        }}
-        }}
-        """.strip()
-
-    def build_image_prompts(self, alts: list[str], topic: str) -> str:
-        lines = "\n".join(f"- {alt}" for alt in alts[:3])
-        return f"""
-Viết lại mỗi mô tả (alt text) về {topic} thành MỘT prompt tiếng Anh ngắn gọn để vẽ ảnh AI.
-Mỗi prompt một dòng. Thêm: photorealistic, 4k, travel photography.
-
-{lines}
-""".strip()
+        return {}

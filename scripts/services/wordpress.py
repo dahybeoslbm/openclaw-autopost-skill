@@ -34,9 +34,10 @@ class WordPressService:
 
     def upload_image(self, image_path: str) -> tuple[int, str]  | None:
         """
-        Upload ảnh local lên WP Media Library.
-        Trả về media ID và URL nếu thành công, None nếu thất bại.
-        Bỏ qua ảnh remote URL (http...).
+        Upload ảnh lên WP Media Library.
+        - Nếu là file local → đọc trực tiếp
+        - Nếu là URL http  → download về rồi upload
+        Trả về (media_id, media_url) hoặc None nếu thất bại.
         """
         if not image_path or image_path.startswith("http"):
             return None
@@ -78,6 +79,39 @@ class WordPressService:
 
         return None
 
+    def upload_image_from_url(self, url: str) -> tuple[int, str] | None:
+        """
+        Download ảnh từ URL (VD: localhost:8080/api/...) rồi upload lên WP Media.
+        Trả về (media_id, wp_url) nếu thành công, None nếu thất bại.
+        """
+        import tempfile
+        try:
+            logger.info("  → Download ảnh từ: %s", url[:60])
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+
+            filename = url.split("/")[-1].split("?")[0] or "image.jpg"
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                ext = ".jpg"
+
+            fd, tmp_path = tempfile.mkstemp(suffix=ext)
+            with os.fdopen(fd, "wb") as f:
+                f.write(resp.content)
+
+            result = self.upload_image(tmp_path)
+
+            # Dọn file tạm
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+            return result
+
+        except Exception as e:
+            logger.error("  → upload_image_from_url error: %s", e)
+            return None
     # ── Taxonomy ────────────────────────────────────────────
 
     def get_or_create_category(self, name: str) -> int | None:
@@ -182,24 +216,40 @@ class WordPressService:
 
         # 2. Upload ảnh → lấy featured image ID
         featured_media_id = None
-        # Map local path → WP URL để thay thế trong nội dung
-        path_to_url: dict[str, str] = {}
+        wp_base = self._config.site_url.rstrip("/")
 
+        # 2a. Upload ảnh local (từ AI render — nếu có)
         for img_path in image_files:
             result = self.upload_image(img_path)
             if result:
                 media_id, media_url = result
-                path_to_url[img_path] = media_url
+                filename = os.path.basename(img_path)
+                html_content = html_content.replace(f"./{filename}", media_url)
+                html_content = html_content.replace(filename, media_url)
+                html_content = html_content.replace(img_path, media_url)
                 if not featured_media_id:
                     featured_media_id = media_id
 
-        # Thay thế src ảnh local trong content_html bằng URL thực của WP
-        for local_path, wp_url in path_to_url.items():
-            # Gemini thường tạo src kiểu "./filename" hoặc "filename"
-            filename = os.path.basename(local_path)
-            html_content = html_content.replace(f"./{filename}", wp_url)
-            html_content = html_content.replace(filename, wp_url)   # fallback không có ./
-            html_content = html_content.replace(local_path, wp_url) # fallback đường dẫn đầy đủ
+        # 2b. Upload ảnh nhúng trong HTML (từ Google Docs API — URL ngoài)
+        #     Tìm tất cả <img src="..."> không phải của WP rồi upload lên Media
+        import re
+        for img_url in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_content):
+            # Bỏ qua: đã là WP URL hoặc data URI
+            if img_url.startswith(wp_base) or img_url.startswith("data:"):
+                continue
+            if not img_url.startswith("http"):
+                continue
+
+            logger.info("  → Phát hiện ảnh ngoài trong HTML: %s", img_url[:60])
+            result = self.upload_image_from_url(img_url)
+            if result:
+                media_id, media_url = result
+                html_content = html_content.replace(img_url, media_url)
+                if not featured_media_id:
+                    featured_media_id = media_id
+                logger.info("  → ✅ Ảnh → WP Media: %s", media_url)
+            else:
+                logger.warning("  → ⚠️  Không upload được ảnh: %s", img_url[:60])
 
         # 3. Resolve categories & tags
         category_ids = [
@@ -212,7 +262,12 @@ class WordPressService:
         ]
 
         # 4. Xác định status
-        wp_status = "draft" if schedule_time and schedule_time != "Hôm nay" else "publish"
+        if schedule_time:
+            wp_status = "future"
+            payload_extra = {"date_gmt": schedule_time}
+        else:
+            wp_status = "publish"
+            payload_extra = {}
 
         # 5. Build payload
         payload: dict = {
@@ -221,6 +276,7 @@ class WordPressService:
             "status"    : wp_status,
             "categories": category_ids,
             "tags"      : tag_ids,
+            **payload_extra,
         }
         if featured_media_id:
             payload["featured_media"] = featured_media_id
