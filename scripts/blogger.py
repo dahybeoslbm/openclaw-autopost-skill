@@ -7,7 +7,6 @@ Luồng nghiệp vụ:
   2. Tìm Google Doc tên = topic, lấy file mới nhất (api.drive.article)
   3. Nếu có doc → Gemini CHỈ convert format caption cho social media, KHÔNG đổi content HTML (để giữ nguyên ảnh, format do người viết)
                    Nội dung giữ nguyên 100% — không viết thêm
-     Nếu không  → fallback: OpenClaw scrape → Gemini viết bài
   4. Đăng WordPress và/hoặc Buffer tuỳ platform
 """
 import os
