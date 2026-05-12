@@ -280,3 +280,96 @@ class GoogleDriveService:
             article.title, article.document_id
         )
         return article
+    
+    def list_articles(
+        self, topic: str, language: str = "vi", limit: int = 10
+    ) -> list[dict]:
+            """
+            Tìm danh sách doc theo topic — chỉ metadata, không export HTML.
+            Trả về list candidates (rỗng nếu không tìm thấy).
+            """
+            list_endpoint = self._endpoint.replace("get-latest-article", "list-articles")
+            logger.info("  → [Drive] list_articles topic='%s'", topic)
+
+            try:
+                resp = requests.post(
+                    list_endpoint,
+                    json={"topic": topic, "language": language, "limit": limit},
+                    headers={"Content-Type": "application/json"},
+                    timeout=self._timeout,
+                )
+            except requests.ConnectionError as exc:
+                raise RuntimeError(f"Không kết nối được api.drive.article: {exc}") from exc
+            except requests.Timeout:
+                raise RuntimeError(f"api.drive.article timeout sau {self._timeout}s")
+
+            if resp.status_code == 404:
+                return []
+            if not resp.ok:
+                raise RuntimeError(f"api.drive.article HTTP {resp.status_code}: {resp.text[:300]}")
+
+            try:
+                raw = resp.text
+                start = raw.find("{")
+                if start > 0:
+                    raw = raw[start:]
+                data = json.loads(raw)
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError("Response không phải JSON") from exc
+
+            return data.get("candidates", [])
+
+
+    def fetch_article_by_id(
+        self, document_id: str, language: str = "vi"
+    ) -> DriveArticle | None:
+        """
+        Fetch full content bằng document_id cụ thể.
+        Bỏ qua bước search — dùng sau khi user đã chọn từ list.
+        """
+        logger.info("  → [Drive] fetch_article_by_id: %s", document_id)
+
+        try:
+            resp = requests.post(
+                self._endpoint,
+                json={"document_id": document_id, "language": language},
+                headers={"Content-Type": "application/json"},
+                timeout=self._timeout,
+            )
+        except requests.ConnectionError as exc:
+            raise RuntimeError(f"Không kết nối được api.drive.article: {exc}") from exc
+        except requests.Timeout:
+            raise RuntimeError(f"api.drive.article timeout sau {self._timeout}s")
+
+        if resp.status_code == 404:
+            return None
+        if not resp.ok:
+            raise RuntimeError(f"api.drive.article HTTP {resp.status_code}: {resp.text[:300]}")
+
+        try:
+            raw = resp.text
+            start = raw.find("{")
+            if start > 0:
+                raw = raw[start:]
+            data = json.loads(raw)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Response không phải JSON") from exc
+
+        metadata    = data.get("metadata") or {}
+        raw_content = data.get("content", "")
+
+        import re as _re
+        from urllib.parse import urlparse as _up
+        api_base    = _up(self._endpoint)
+        actual_base = f"{api_base.scheme}://{api_base.netloc}"
+        raw_content = _re.sub(r'https?://localhost(:\d+)?', actual_base, raw_content)
+
+        return DriveArticle(
+            document_id    = data.get("document_id", document_id),
+            document_url   = data.get("document_url", ""),
+            title          = data.get("title", ""),
+            content        = _sanitize_gdoc_html(raw_content),
+            content_blocks = data.get("content_blocks") or [],
+            keywords       = metadata.get("keywords") or [],
+            modified_date  = metadata.get("modified_date", ""),
+        )

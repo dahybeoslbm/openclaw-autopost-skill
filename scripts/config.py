@@ -86,6 +86,7 @@ class GoogleDriveAPIConfig:
 @dataclass(frozen=True)
 class AppConfig:
     output_dir: str
+    chat_id:    str
     openclaw: OpenClawConfig
     gemini: GeminiConfig
     ollama: OllamaConfig
@@ -100,6 +101,7 @@ def load_config() -> AppConfig:
     """
     return AppConfig(
         output_dir=os.environ.get("OUTPUT_DIR", "/app/output"),
+        chat_id=os.environ.get("CHAT_ID", ""),
         openclaw=OpenClawConfig(
             bin_path=os.environ.get(
                 "OPENCLAW_BIN",
@@ -126,7 +128,6 @@ def load_config() -> AppConfig:
         buffer=BufferConfig(
             api_key=os.environ.get("BUFFER_API_KEY", ""),
         ),
-        
         googledrive=GoogleDriveAPIConfig(
             api_url=os.environ.get("GDRIVE_API_URL", ""),
             timeout=int(os.environ.get("GDRIVE_API_TIMEOUT", "30")),

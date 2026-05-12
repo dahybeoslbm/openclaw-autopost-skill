@@ -26,10 +26,15 @@ from services.wordpress import WordPressService
 from services.googledrive import GoogleDriveService, DriveArticle
 
 from services.buffer import BufferClient
-from utils.models    import BufferPostResult, ScrapedContent
+from utils.models    import BufferPostResult, ParsedRequest
 from services.buffer.social_formatter import build_all as build_social_texts
 
 from datetime import datetime, timezone
+
+from utils.selection_cache import (
+    PendingSelection, save_pending, load_any_pending,
+    delete_pending, delete_all_pending, purge_expired,
+)
 logger = get_logger("blogger")
 
 
@@ -85,7 +90,13 @@ _SERVICE_TO_ATTR = {
     "google_business": "google_business",
     "googlebusiness": "google_business",
 }
+_CANCEL_KEYWORDS = {"huỷ", "huy", "cancel", "thôi", "bỏ"}
 
+def _is_selection_reply(prompt: str) -> bool:
+    return prompt.strip().isdigit()
+
+def _is_cancel(prompt: str) -> bool:
+    return prompt.strip().lower() in _CANCEL_KEYWORDS
 # ── Source resolver ───────────────────────────────────────────────────────────
  
 def _resolve_source(
@@ -118,8 +129,6 @@ def _resolve_source(
         logger.error("  → [Drive] Lỗi kết nối: %s", exc)
         return None
  
- 
-
 # ── Main workflow ────────────────────────────────────────────
 
 def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
@@ -132,28 +141,125 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     # Khởi tạo services
     gemini   = GeminiService(cfg.gemini, ollama_config=cfg.ollama)
     wp       = WordPressService(cfg.wordpress)
+    drive_service = GoogleDriveService.from_config(cfg.googledrive)
+    
+    purge_expired()
+    
+    if _is_cancel(user_prompt):
+        delete_all_pending()
+        print("❌ Đã huỷ yêu cầu chọn bài.")
+        return PublishResult(file_path="")
+    
+    # ── LƯỢT 2: User reply số thứ tự ─────────────────────────────────────
+    if _is_selection_reply(user_prompt):
+        choice  = int(user_prompt.strip())
+        pending = load_any_pending(cfg.chat_id)
 
+        if not pending:
+            print(
+                "⚠️  Không tìm thấy phiên chọn bài nào còn hạn (TTL 24h).\n"
+                "Vui lòng gõ lại yêu cầu đăng bài từ đầu."
+            )
+            return PublishResult(file_path="", error="NO_PENDING_SELECTION")
+
+        if choice < 1 or choice > len(pending.candidates):
+            print(f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending.candidates)}.")
+            return PublishResult(file_path="", error="INVALID_CHOICE")
+
+        selected    = pending.candidates[choice - 1]
+        document_id = selected["document_id"]
+        parsed      = ParsedRequest(
+            topic         = pending.topic,
+            platform      = pending.platform,
+            schedule_time = pending.schedule,
+        )
+
+        print(f"✅ Đã chọn: {selected['title']}")
+        delete_pending(cfg.chat_id, pending.topic)
+
+        logger.info("[2/6] Fetch doc đã chọn: %s", document_id)
+        try:
+            drive_article = drive_service.fetch_article_by_id(
+                document_id, cfg.googledrive.language
+            )
+        except RuntimeError as exc:
+            return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
+
+        if not drive_article:
+            return PublishResult(file_path="", error=f"❌ Doc {document_id} không tồn tại.")
+
+        return _continue_publish(cfg, gemini, wp, drive_article, parsed, webhook_url)
+    
+    # ── LƯỢT 1: Parse prompt mới ──────────────────────────────────────────
+    
     # ── Bước 1: Parse yêu cầu ───────────────────────────────
     parsed = parse_request(user_prompt)
 
-    # ── Bước 2: Tìm tài liệu Google Drive ───────────────────────────────────
-    logger.info("[2/6] Tìm tài liệu Google Drive...")
-    drive_article = _resolve_source(topic=parsed.topic, cfg=cfg)
+    if not cfg.googledrive.is_valid:
+        return PublishResult(file_path="", error="❌ GDRIVE_API_URL chưa cấu hình.")
 
-    if not drive_article:
-        msg = (
-            f"❌ Không tìm thấy tài liệu nào cho topic: \"{parsed.topic}\".\n"
-            f"Vui lòng tạo Google Doc với tên khớp topic rồi thử lại."
+    # ── Bước 2: Tìm tài liệu Google Drive ───────────────────────────────────
+    logger.info("[2/6] List tài liệu Google Drive...")
+    try:
+        candidates = drive_service.list_articles(
+            topic    = parsed.topic,
+            language = cfg.googledrive.language,
         )
-        logger.error(msg)
-        # Webhook thông báo thất bại nếu có
-        if webhook_url:
-            try:
-                requests.post(webhook_url, json={"text": msg}, timeout=5)
-            except Exception:
-                pass
+    except RuntimeError as exc:
+        return PublishResult(file_path="", error=f"❌ Lỗi Drive API: {exc}")
+
+    # 0 kết quả
+    if not candidates:
+        msg = f"❌ Không tìm thấy tài liệu nào cho topic: \"{parsed.topic}\""
+        print(msg)
         return PublishResult(file_path="", error=msg)
 
+    # 1 kết quả → tự động proceed
+    if len(candidates) == 1:
+        logger.info("  → 1 kết quả, tự động chọn: %s", candidates[0]["title"])
+        try:
+            drive_article = drive_service.fetch_article_by_id(
+                candidates[0]["document_id"], cfg.googledrive.language
+            )
+        except RuntimeError as exc:
+            return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
+
+        return _continue_publish(cfg, gemini, wp, drive_article, parsed, webhook_url)
+
+    # 2+ kết quả → lưu cache, in list, dừng chờ
+    save_pending(cfg.chat_id, parsed.topic, PendingSelection(
+        candidates = candidates,
+        platform   = parsed.platform,
+        schedule   = parsed.schedule_time,
+        topic      = parsed.topic,
+    ))
+
+    lines = [f"Tìm thấy {len(candidates)} tài liệu về '{parsed.topic}':"]
+    for i, doc in enumerate(candidates):
+        date  = doc.get("modified_date", "")[:10]
+        title = doc.get("title", f"Tài liệu {i+1}")
+        lines.append(f"  {i+1}. {title} (sửa: {date})")
+    lines.append("→ Trả lời số thứ tự để chọn bài muốn đăng.")
+    lines.append("  (Gõ 'huỷ' để bỏ qua)")
+
+    print("\n".join(lines))
+    return PublishResult(file_path="", error="PENDING_SELECTION")
+
+    
+
+
+def _continue_publish(
+    cfg, gemini, wp,
+    drive_article,
+    parsed: ParsedRequest,
+    webhook_url: str | None,
+) -> PublishResult:
+    """
+    Bước 3→7: xử lý ảnh, tạo content, lưu file, đăng bài.
+    Tách riêng để gọi từ cả lượt 1 (1 kết quả) lẫn lượt 2 (user chọn).
+    Nội dung copy nguyên từ run() hiện tại, bắt đầu từ "Bước 3".
+    """
+    # --- copy toàn bộ code từ Bước 3 đến hết run() hiện tại vào đây ---
     # ── Bước 3: Ảnh từ Drive (không render AI) ───────────────────────────────
     logger.info("[3/6] Dùng %d ảnh từ Google Docs", drive_article.image_count())
     image_files: list[str] = []   # ảnh đã nhúng trong HTML, không cần file riêng
@@ -310,12 +416,14 @@ def main():
 
     result = run(user_input, webhook_url)
 
-    logger.info("\n[+] Hoàn thành! Kết quả:")
-    logger.info("    File     : %s", result.file_path)
+    non_error_states = {"PENDING_SELECTION", "NO_PENDING_SELECTION", "INVALID_CHOICE", ""}
+    if result.error and result.error not in non_error_states:
+        logger.error("Lỗi: %s", result.error)
+        sys.exit(1)
+
     if result.posted_to_wp:
-        logger.info("    WP ID    : %d", result.wp_post_id)
-        logger.info("    WP URL   : %s", result.wp_post_url)
-        logger.info("    WP Status: %s", result.wp_status)
+        logger.info("WP URL: %s", result.wp_post_url)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
