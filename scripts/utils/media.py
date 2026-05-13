@@ -43,5 +43,5 @@ def resolve_assets(
     if resolved_video:
         return {"videos": [{"url": resolved_video}]}
     if resolved_images:
-        return {"images": [{"url": u} for u in resolved_images]}
+        return [{"image": {"url": u}} for u in resolved_images]
     return None
