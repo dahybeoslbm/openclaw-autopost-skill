@@ -213,7 +213,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         document_id = selected["document_id"]
         parsed      = ParsedRequest(
             topic         = pending.topic,
-            platform      = pending.platform,
+            platforms     = pending.platform,
             schedule_time = pending.schedule,
         )
 
@@ -267,7 +267,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     # 2+ kết quả → lưu cache, in list, dừng chờ
     save_pending(cfg.chat_id, parsed.topic, PendingSelection(
         candidates = candidates,
-        platform   = parsed.platform,
+        platform   = parsed.platforms,
         schedule   = parsed.schedule_time,
         topic      = parsed.topic,
     ))
@@ -302,20 +302,16 @@ def _continue_publish(
       "wordpress"                      → chỉ WP
       Tên platform cụ thể              → chỉ Buffer platform đó
     """
-    platform_lower = parsed.platform.lower()
+    platforms        = [p.lower() for p in parsed.platforms]
 
     # Quyết định publish đâu
     # "blog" = không đề cập platform → publish ALL
-    publish_all  = platform_lower == "blog"
-    should_wp    = publish_all or platform_lower == "wordpress"
-    should_buffer = cfg.buffer.is_valid and (
-        publish_all or platform_lower in _BUFFER_PLATFORMS
-    )
+    publish_all      = platforms == ["blog"]
+    should_wp        = publish_all or "wordpress" in platforms
+    buffer_list      = [p for p in platforms if p in _BUFFER_PLATFORMS]
+    should_buffer    = cfg.buffer.is_valid and (publish_all or bool(buffer_list))
     # Danh sách platform filter cho Buffer ([] = tất cả channels đã đăng ký)
-    buffer_platforms = (
-        [] if publish_all
-        else ([platform_lower] if platform_lower in _BUFFER_PLATFORMS else [])
-    )
+    buffer_platforms = [] if publish_all else buffer_list
 
     # ── Bước 3: Thu thập Drive image URLs (cho Buffer) ───────────────────────
     # Buffer dùng URL thẳng từ Drive API, KHÔNG upload lên WP Media
@@ -352,7 +348,7 @@ def _continue_publish(
         logger.info("[4/6] Bỏ qua Gemini (không đăng social)")
 
     # ── Bước 5: Lưu file backup ──────────────────────────────────────────────
-    platform_label = "all" if publish_all else platform_lower
+    platform_label = "all" if publish_all else ", ".join(platforms)
     file_path = _save_to_file(
         content    = drive_article.content,
         output_dir = cfg.output_dir,

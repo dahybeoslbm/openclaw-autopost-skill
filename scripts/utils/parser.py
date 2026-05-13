@@ -145,11 +145,13 @@ def _detect_schedule(text: str) -> str:
     return ""
 
 
-def _detect_platform(text: str) -> str:
-    for platform, keywords in _PLATFORM_KEYWORDS.items():
-        if any(kw in text for kw in keywords):
-            return platform
-    return "Blog"
+def _detect_platforms(text: str) -> list[str]:
+    found = [
+        platform
+        for platform, keywords in _PLATFORM_KEYWORDS.items()
+        if platform != "blog" and any(kw in text for kw in keywords)
+    ]
+    return found if found else ["Blog"]
 
 
 def _detect_topic(text: str, original: str) -> str:
@@ -180,12 +182,12 @@ def parse_request(user_prompt: str) -> ParsedRequest:
 
     result = ParsedRequest(
         topic=_detect_topic(lower, user_prompt),
-        platform=_detect_platform(lower),
+        platforms=_detect_platforms(lower),
         schedule_time=_detect_schedule(lower),
     )
 
     logger.info(
         "  → Topic='%s' | Platform='%s' | Schedule='%s'",
-        result.topic, result.platform, result.schedule_time
+        result.topic, result.platforms, result.schedule_time
     )
     return result
