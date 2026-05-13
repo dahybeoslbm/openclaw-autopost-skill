@@ -40,7 +40,7 @@ class BasePlatform:
         else:
                 # Không có mode "now" — dùng customScheduled với thời gian hiện tại
                 mode   = "customScheduled"
-                due_at = (datetime.now(timezone.utc) + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                due_at = (datetime.now(timezone.utc) + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
         payload: dict = {
             "channelId":      channel_id,
