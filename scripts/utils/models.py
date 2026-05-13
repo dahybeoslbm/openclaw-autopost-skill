@@ -10,7 +10,7 @@ from typing import Optional
 class ParsedRequest:
     """Kết quả phân tích câu lệnh tự nhiên từ người dùng."""
     topic: str
-    platform: str = "Blog"
+    platforms: list[str] = field(default_factory=lambda: ["Blog"])
     schedule_time: str = ""
 
 
