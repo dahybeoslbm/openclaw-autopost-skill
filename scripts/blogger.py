@@ -5,54 +5,69 @@ Không chứa business logic — mọi thứ đã được tách vào services/.
 Luồng nghiệp vụ:
   1. Parse prompt → topic, platform, schedule
   2. Tìm Google Doc tên = topic, lấy file mới nhất (api.drive.article)
-  3. Nếu có doc → Gemini CHỈ convert format caption cho social media, KHÔNG đổi content HTML (để giữ nguyên ảnh, format do người viết)
-                   Nội dung giữ nguyên 100% — không viết thêm
+  3. Nếu có doc → Gemini CHỈ convert format caption cho social media, KHÔNG đổi content HTML
   4. Đăng WordPress và/hoặc Buffer tuỳ platform
+     - "blog" (mặc định, không đề cập platform) → đăng TẤT CẢ: WP + mọi Buffer channel đã đăng ký
+     - "wordpress" → chỉ WP
+     - Tên platform cụ thể (facebook, instagram, …) → chỉ Buffer platform đó
 """
 import os
 import sys
 import time
+import re as _img_re
+import concurrent.futures
+from urllib.parse import urlparse as _urlparse
 
 import requests
 
 from config import load_config
 
 from utils.logger import get_logger
-from utils.models import PublishResult
+from utils.models import PublishResult, BufferPostResult
 from utils.parser import parse_request
 from services.gemini import GeminiService
 from services.wordpress import WordPressService
 from services.googledrive import GoogleDriveService, DriveArticle
 
 from services.buffer import BufferClient
-from utils.models    import BufferPostResult, ParsedRequest
+from utils.models import ParsedRequest
 from services.buffer.social_formatter import build_all as build_social_texts
-
-from datetime import datetime, timezone
 
 from utils.selection_cache import (
     PendingSelection, save_pending, load_any_pending,
     delete_pending, delete_all_pending, purge_expired,
 )
+
 logger = get_logger("blogger")
 
+# ── Constants ────────────────────────────────────────────────────────────────
 
-# ── Helpers ─────────────────────────────────────────────────
+_BUFFER_PLATFORMS = {
+    "facebook", "instagram", "tiktok", "threads",
+    "twitter", "linkedin", "youtube", "bluesky",
+    "pinterest", "mastodon", "google_business",
+}
+_SERVICE_TO_ATTR = {
+    "facebook":       "facebook",
+    "instagram":      "instagram",
+    "tiktok":         "tiktok",
+    "threads":        "threads",
+    "twitter":        "twitter",
+    "x":              "twitter",
+    "linkedin":       "linkedin",
+    "youtube":        "youtube",
+    "bluesky":        "bluesky",
+    "pinterest":      "pinterest",
+    "mastodon":       "mastodon",
+    "google":         "google_business",
+    "google_business":"google_business",
+    "googlebusiness": "google_business",
+}
+_CANCEL_KEYWORDS = {"huỷ", "huy", "cancel", "thôi", "bỏ"}
 
-
-
-def _build_images_markdown(image_files: list[str]) -> str:
-    lines = []
-    for i, img in enumerate(image_files):
-        if img.startswith("http"):
-            lines.append(f"![Hình minh họa {i+1}]({img})")
-        else:
-            lines.append(f"![Hình minh họa {i+1}](./{img})")
-    return "\n".join(lines)
-
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _save_to_file(content: str, output_dir: str, topic: str, platform: str, schedule: str) -> str:
-    """Lưu bài viết thành file .md, trả về đường dẫn."""
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, f"travel_blog_{int(time.time())}.md")
     header = f"---\nTopic: {topic}\nSchedule: {schedule}\nPlatform: {platform}\n---\n\n"
@@ -62,7 +77,6 @@ def _save_to_file(content: str, output_dir: str, topic: str, platform: str, sche
 
 
 def _notify_webhook(webhook_url: str, title: str, file_path: str) -> None:
-    """Gửi thông báo qua webhook (Telegram, v.v.)."""
     try:
         requests.post(
             webhook_url,
@@ -72,84 +86,114 @@ def _notify_webhook(webhook_url: str, title: str, file_path: str) -> None:
     except Exception as e:
         logger.warning("Webhook error: %s", e)
 
-# Danh sách platform thuộc Buffer (social)
-_BUFFER_PLATFORMS = {
-    "facebook", "instagram", "tiktok", "threads",
-    "twitter", "linkedin", "youtube", "bluesky",
-    "pinterest", "mastodon", "google_business",
-}
-_SERVICE_TO_ATTR = {
-    "facebook": "facebook", "instagram": "instagram",
-    "tiktok": "tiktok", "threads": "threads",
-    "twitter": "twitter", "x": "twitter",
-    "linkedin": "linkedin", "youtube": "youtube",
-    "bluesky": "bluesky", "pinterest": "pinterest",
-    "mastodon": "mastodon",
-    "google": "google_business",
-    "google_business": "google_business",
-    "googlebusiness": "google_business",
-}
-_CANCEL_KEYWORDS = {"huỷ", "huy", "cancel", "thôi", "bỏ"}
 
 def _is_selection_reply(prompt: str) -> bool:
     return prompt.strip().isdigit()
 
+
 def _is_cancel(prompt: str) -> bool:
     return prompt.strip().lower() in _CANCEL_KEYWORDS
-# ── Source resolver ───────────────────────────────────────────────────────────
- 
-def _resolve_source(
-    topic: str,
+
+
+# ── Publish workers (chạy song song) ────────────────────────────────────────
+
+def _worker_wordpress(
+    wp: WordPressService,
+    article_data: dict,
+    parsed: ParsedRequest,
+) -> dict | None:
+    """
+    Worker chạy trong thread riêng: đăng WordPress.
+    Trả về response dict nếu thành công, None nếu thất bại.
+    Ảnh trong HTML được upload lên WP Media để WP tự host.
+    """
+    return wp.publish(
+        article_data   = article_data,
+        image_files    = [],             # không có file local — WP tự detect img trong HTML
+        schedule_time  = parsed.schedule_time,
+        category_names = ["Du Lịch"],
+        tag_names      = [parsed.topic.title()],
+    )
+
+
+def _worker_buffer(
     cfg,
-) ->  DriveArticle | None:
+    social_texts: dict,
+    drive_image_urls: list[str],
+    scheduled_at: str | None,
+    buffer_platforms: list[str],         # [] = tất cả channels đã đăng ký
+) -> list[BufferPostResult]:
     """
-    Tìm Google Doc theo topic.
-    Trả về DriveArticle nếu tìm thấy, None nếu không có.
-    Không fallback về OpenClaw — nội dung phải do người viết.
+    Worker chạy trong thread riêng: đăng tất cả Buffer channels.
+    Ảnh lấy trực tiếp từ Drive API URL — không qua WP Media.
     """
-    if not cfg.googledrive.is_valid:
-        logger.error("  → [Drive] GDRIVE_API_URL chưa cấu hình trong .env")
-        return None
-
+    results: list[BufferPostResult] = []
     try:
-        drive_service = GoogleDriveService.from_config(cfg.googledrive)
-        drive_article = drive_service.fetch_article(
-            topic=topic,
-            language=cfg.googledrive.language,
-        )
-        if drive_article:
-            logger.info("  → [Drive] ✅ Tìm thấy: \"%s\"", drive_article.title)
-            return drive_article
+        buffer  = BufferClient(api_key=cfg.buffer.api_key)
+        targets = buffer.get_channels_from_env(buffer_platforms or None)
 
-        logger.warning("  → [Drive] Không tìm thấy doc nào cho topic: \"%s\"", topic)
-        return None
+        if not targets:
+            logger.warning("  → [Buffer] Không tìm thấy channel nào trong .env")
+            return results
 
-    except RuntimeError as exc:
-        logger.error("  → [Drive] Lỗi kết nối: %s", exc)
-        return None
- 
-# ── Main workflow ────────────────────────────────────────────
+        for ch in targets:
+            service      = (ch.get("service") or "").lower()
+            post_opts    = social_texts.get(service) or social_texts.get("facebook", {})
+            attr         = _SERVICE_TO_ATTR.get(service)
+            platform_obj = getattr(buffer, attr, None) if attr else None
+
+            if not platform_obj:
+                logger.warning("  → [Buffer] '%s' chưa hỗ trợ, bỏ qua", service)
+                continue
+
+            try:
+                post = platform_obj.create_post(
+                    ch["id"],
+                    text         = post_opts.get("text", ""),
+                    image_urls   = drive_image_urls or None,
+                    scheduled_at = scheduled_at,
+                )
+                results.append(BufferPostResult(
+                    platform     = service,
+                    channel_name = ch.get("name", ""),
+                    channel_id   = ch["id"],
+                    status       = "success",
+                    post_id      = post.get("id", ""),
+                ))
+                logger.info("  → [Buffer] ✅ [%s] %s", service.upper(), ch.get("name"))
+            except Exception as e:
+                results.append(BufferPostResult(
+                    platform     = service,
+                    channel_name = ch.get("name", ""),
+                    channel_id   = ch["id"],
+                    status       = "error",
+                    error        = str(e),
+                ))
+                logger.warning("  → [Buffer] ❌ [%s] %s — %s", service.upper(), ch.get("name"), e)
+
+    except Exception as e:
+        logger.warning("  → [Buffer] Lỗi khởi tạo: %s", e)
+
+    return results
+
+
+# ── Main workflow ────────────────────────────────────────────────────────────
 
 def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
-    """
-    Chạy toàn bộ workflow từ câu lệnh tự nhiên đến xuất bản.
-    Trả về PublishResult chứa kết quả.
-    """
     cfg = load_config()
 
-    # Khởi tạo services
-    gemini   = GeminiService(cfg.gemini, ollama_config=cfg.ollama)
-    wp       = WordPressService(cfg.wordpress)
+    gemini        = GeminiService(cfg.gemini, ollama_config=cfg.ollama)
+    wp            = WordPressService(cfg.wordpress)
     drive_service = GoogleDriveService.from_config(cfg.googledrive)
-    
+
     purge_expired()
-    
+
     if _is_cancel(user_prompt):
         delete_all_pending()
         print("❌ Đã huỷ yêu cầu chọn bài.")
         return PublishResult(file_path="")
-    
-    # ── LƯỢT 2: User reply số thứ tự ─────────────────────────────────────
+
+    # ── LƯỢT 2: User reply số thứ tự ────────────────────────────────────────
     if _is_selection_reply(user_prompt):
         choice  = int(user_prompt.strip())
         pending = load_any_pending(cfg.chat_id)
@@ -188,16 +232,13 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
             return PublishResult(file_path="", error=f"❌ Doc {document_id} không tồn tại.")
 
         return _continue_publish(cfg, gemini, wp, drive_article, parsed, webhook_url)
-    
-    # ── LƯỢT 1: Parse prompt mới ──────────────────────────────────────────
-    
-    # ── Bước 1: Parse yêu cầu ───────────────────────────────
+
+    # ── LƯỢT 1: Parse prompt mới ─────────────────────────────────────────────
     parsed = parse_request(user_prompt)
 
     if not cfg.googledrive.is_valid:
         return PublishResult(file_path="", error="❌ GDRIVE_API_URL chưa cấu hình.")
 
-    # ── Bước 2: Tìm tài liệu Google Drive ───────────────────────────────────
     logger.info("[2/6] List tài liệu Google Drive...")
     try:
         candidates = drive_service.list_articles(
@@ -207,13 +248,11 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     except RuntimeError as exc:
         return PublishResult(file_path="", error=f"❌ Lỗi Drive API: {exc}")
 
-    # 0 kết quả
     if not candidates:
         msg = f"❌ Không tìm thấy tài liệu nào cho topic: \"{parsed.topic}\""
         print(msg)
         return PublishResult(file_path="", error=msg)
 
-    # 1 kết quả → tự động proceed
     if len(candidates) == 1:
         logger.info("  → 1 kết quả, tự động chọn: %s", candidates[0]["title"])
         try:
@@ -244,28 +283,43 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     print("\n".join(lines))
     return PublishResult(file_path="", error="PENDING_SELECTION")
 
-    
 
+# ── Core publish pipeline ────────────────────────────────────────────────────
 
 def _continue_publish(
-    cfg, gemini, wp,
-    drive_article,
+    cfg,
+    gemini: GeminiService,
+    wp: WordPressService,
+    drive_article: DriveArticle,
     parsed: ParsedRequest,
     webhook_url: str | None,
 ) -> PublishResult:
     """
-    Bước 3→7: xử lý ảnh, tạo content, lưu file, đăng bài.
-    Tách riêng để gọi từ cả lượt 1 (1 kết quả) lẫn lượt 2 (user chọn).
-    Nội dung copy nguyên từ run() hiện tại, bắt đầu từ "Bước 3".
+    Bước 3→6: xử lý nội dung, lưu file, đăng bài song song.
+
+    Platform logic:
+      "blog"  (default, không đề cập) → WP + TẤT CẢ Buffer channels
+      "wordpress"                      → chỉ WP
+      Tên platform cụ thể              → chỉ Buffer platform đó
     """
-    # --- copy toàn bộ code từ Bước 3 đến hết run() hiện tại vào đây ---
-    # ── Bước 3: Ảnh từ Drive (không render AI) ───────────────────────────────
-    logger.info("[3/6] Dùng %d ảnh từ Google Docs", drive_article.image_count())
-    image_files: list[str] = []   # ảnh đã nhúng trong HTML, không cần file riêng
-    
-    # Lấy URL ảnh từ content_blocks để đăng social media qua Buffer
-    import re as _img_re
-    from urllib.parse import urlparse as _urlparse
+    platform_lower = parsed.platform.lower()
+
+    # Quyết định publish đâu
+    # "blog" = không đề cập platform → publish ALL
+    publish_all  = platform_lower == "blog"
+    should_wp    = publish_all or platform_lower == "wordpress"
+    should_buffer = cfg.buffer.is_valid and (
+        publish_all or platform_lower in _BUFFER_PLATFORMS
+    )
+    # Danh sách platform filter cho Buffer ([] = tất cả channels đã đăng ký)
+    buffer_platforms = (
+        [] if publish_all
+        else ([platform_lower] if platform_lower in _BUFFER_PLATFORMS else [])
+    )
+
+    # ── Bước 3: Thu thập Drive image URLs (cho Buffer) ───────────────────────
+    # Buffer dùng URL thẳng từ Drive API, KHÔNG upload lên WP Media
+    logger.info("[3/6] Lấy ảnh từ Google Docs (%d ảnh)", drive_article.image_count())
     _api_parsed  = _urlparse(cfg.googledrive.api_url)
     _actual_base = f"{_api_parsed.scheme}://{_api_parsed.netloc}"
 
@@ -274,140 +328,115 @@ def _continue_publish(
         if block.get("type") == "image" and block.get("url"):
             url = _img_re.sub(r'https?://localhost(:\d+)?', _actual_base, block["url"])
             drive_image_urls.append(url)
-            
-    # ── Bước 4: Tạo nội dung HTML ────────────────────────────────────────────
-    logger.info("[4/6] Chuyển đổi nội dung (Gemini)...")
-    plain = drive_article.plain_text()
-    social_captions = gemini.generate_social_captions(
-        topic      = parsed.topic,
-        title      = drive_article.title,
-        plain_text = plain,
-    )
-    logger.info("  → social_captions: %d platforms", len(social_captions))
 
-    article_data = {
-        "seo_title":        drive_article.title,
-        "meta_description": plain[:160],
-        "focus_keyword":    parsed.topic,
-        "excerpt":          plain[:300],
-        "content_html":     drive_article.content,   # Drive, không thay đổi
-        "social_captions":  social_captions,
-    }
+    # ── Bước 4: Gemini → social captions ────────────────────────────────────
+    plain = drive_article.plain_text()
+
+    social_texts: dict = {}
+    if should_buffer:
+        logger.info("[4/6] Gemini tạo social captions...")
+        social_captions = gemini.generate_social_captions(
+            topic      = parsed.topic,
+            title      = drive_article.title,
+            plain_text = plain,
+        )
+        logger.info("  → %d platforms", len(social_captions))
+        social_texts = build_social_texts(
+            topic           = parsed.topic,
+            title           = drive_article.title,
+            excerpt         = plain[:300],
+            wp_url          = "",          # WP URL chưa có — điền sau khi WP xong
+            social_captions = social_captions,
+        )
+    else:
+        logger.info("[4/6] Bỏ qua Gemini (không đăng social)")
 
     # ── Bước 5: Lưu file backup ──────────────────────────────────────────────
+    platform_label = "all" if publish_all else platform_lower
     file_path = _save_to_file(
-        content    = article_data.get("content_html", ""),
+        content    = drive_article.content,
         output_dir = cfg.output_dir,
         topic      = parsed.topic,
-        platform   = parsed.platform,
+        platform   = platform_label,
         schedule   = parsed.schedule_time,
     )
     logger.info("[5/6] 💾 Lưu file: %s", file_path)
- 
+
     result = PublishResult(file_path=file_path)
 
-    # ── Bước 6: Xuất bản ────────────────────────────────────
-    logger.info("[6/6] Xuất bản bài viết...")
-    platform_lower = parsed.platform.lower()
-    
-    # WordPress
-    if platform_lower == "wordpress":
-        wp_result = wp.publish(
-            article_data   = article_data,
-            image_files    = image_files,
-            schedule_time  = parsed.schedule_time,
-            category_names = ["Du Lịch"],
-            tag_names      = [parsed.topic.title()],
-        )
-        if wp_result:
-            result.wp_post_id  = wp_result["id"]
-            result.wp_post_url = wp_result["link"]
-            result.wp_status   = wp_result["status"]
-            logger.info("  → ✅ WordPress: %s", result.wp_post_url)
+    # ── Bước 6: Publish song song WP + Buffer ───────────────────────────────
+    logger.info("[6/6] Xuất bản song song (WP=%s | Buffer=%s)...", should_wp, should_buffer)
 
-    # Webhook notification
-    title = article_data.get("seo_title", parsed.topic)
+    article_data = {
+        "seo_title":       drive_article.title,
+        "meta_description": plain[:160],
+        "focus_keyword":   parsed.topic,
+        "excerpt":         plain[:300],
+        "content_html":    drive_article.content,
+        "social_captions": {},
+    }
+    title = drive_article.title
+
+    wp_future     = None
+    buffer_future = None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        if should_wp and cfg.wordpress.is_valid:
+            wp_future = executor.submit(
+                _worker_wordpress, wp, article_data, parsed
+            )
+
+        if should_buffer:
+            buffer_future = executor.submit(
+                _worker_buffer,
+                cfg,
+                social_texts,
+                drive_image_urls,
+                parsed.schedule_time or None,
+                buffer_platforms,
+            )
+
+        # ── Thu kết quả WP ───────────────────────────────────────────────────
+        if wp_future is not None:
+            try:
+                wp_resp = wp_future.result()
+                if wp_resp:
+                    result.wp_post_id  = wp_resp["id"]
+                    result.wp_post_url = wp_resp["link"]
+                    result.wp_status   = wp_resp["status"]
+                    logger.info("  → ✅ WordPress: %s", result.wp_post_url)
+
+                    # Nếu publish_all: cập nhật wp_url vào social_texts và re-post
+                    # Không cần: wp_url trong caption là bonus, không ảnh hưởng chất lượng.
+                    # Buffer đã chạy song song rồi — không wait để inject url.
+                    # Trade-off chấp nhận được: tốc độ > có link WP trong caption.
+            except Exception as exc:
+                logger.error("  → ❌ WordPress thất bại: %s", exc)
+                result.error = str(exc)
+
+        # ── Thu kết quả Buffer ───────────────────────────────────────────────
+        if buffer_future is not None:
+            try:
+                result.buffer_results = buffer_future.result()
+                succeeded = sum(1 for r in result.buffer_results if r.status == "success")
+                logger.info(
+                    "  → Buffer: %d/%d channel thành công",
+                    succeeded, len(result.buffer_results),
+                )
+            except Exception as exc:
+                logger.warning("  → ❌ Buffer thất bại: %s", exc)
+
+    # ── Log tổng kết ─────────────────────────────────────────────────────────
+    if not should_wp and not should_buffer:
+        logger.info("  → 💾 Chỉ lưu file (WP chưa cấu hình + Buffer không hợp lệ)")
+
     if webhook_url:
         _notify_webhook(webhook_url, title, file_path)
-    
-    # Buffer (mạng xã hội)
-    should_run_buffer = cfg.buffer.is_valid and platform_lower != "wordpress"
- 
-    if should_run_buffer:
-        buffer_platforms = (
-            [platform_lower] if platform_lower in _BUFFER_PLATFORMS else []
-        )
-        logger.info(
-            "[7/7] Buffer: %s",
-            ", ".join(buffer_platforms) if buffer_platforms else "tất cả platforms",
-        )
- 
-        # Ảnh đính kèm post: nếu có image_files dùng file, không thì bỏ qua
-        # social_image_urls = [f for f in image_files if f.startswith("http")][:1]
-        social_image_urls = drive_image_urls
- 
-        social_texts = build_social_texts(
-            topic          = parsed.topic,
-            title          = title,
-            excerpt        = article_data.get("excerpt", ""),
-            wp_url         = result.wp_post_url or "",
-            social_captions= article_data.get("social_captions"),
-        )
-        scheduled_at = parsed.schedule_time or None
- 
-        try:
-            buffer  = BufferClient(api_key=cfg.buffer.api_key)
-            targets = buffer.get_channels_from_env(buffer_platforms)
- 
-            if not targets:
-                logger.warning("  → Không tìm thấy channel nào trong .env")
- 
-            for ch in targets:
-                service      = (ch.get("service") or "").lower()
-                post_opts    = social_texts.get(service) or social_texts["facebook"]
-                attr         = _SERVICE_TO_ATTR.get(service)
-                platform_obj = getattr(buffer, attr, None) if attr else None
- 
-                if not platform_obj:
-                    logger.warning("  → '%s' chưa hỗ trợ, bỏ qua", service)
-                    continue
- 
-                try:
-                    post = platform_obj.create_post(
-                        ch["id"],
-                        text         = post_opts["text"],
-                        image_urls   = social_image_urls or None,
-                        scheduled_at = scheduled_at,
-                    )
-                    br = BufferPostResult(
-                        platform=service, channel_name=ch.get("name", ""),
-                        channel_id=ch["id"], status="success",
-                        post_id=post.get("id", ""),
-                    )
-                    logger.info("  → ✅ [%s] %s", service.upper(), ch.get("name"))
-                except Exception as e:
-                    br = BufferPostResult(
-                        platform=service, channel_name=ch.get("name", ""),
-                        channel_id=ch["id"], status="error", error=str(e),
-                    )
-                    logger.warning(" → ❌ [%s] %s — %s", service.upper(), ch.get("name"), str(e))
- 
-                result.buffer_results.append(br)
- 
-            succeeded = sum(1 for r in result.buffer_results if r.status == "success")
-            logger.info("  → Buffer: %d/%d channel thành công",
-                        succeeded, len(result.buffer_results))
-        except Exception as e:
-            logger.warning("  → Buffer thất bại: %s", e)
- 
-    elif platform_lower == "wordpress":
-        logger.info("[7/7] Bỏ qua Buffer (chỉ đăng WordPress)")
-    else:
-        logger.info("[7/7] Bỏ qua Buffer (chưa cấu hình BUFFER_API_KEY)")
- 
+
     return result
 
-# ── Entry point ──────────────────────────────────────────────
+
+# ── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
     user_input  = sys.argv[1] if len(sys.argv) > 1 else "Du lịch Đà Nẵng"
