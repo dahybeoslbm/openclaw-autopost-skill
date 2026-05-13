@@ -344,7 +344,7 @@ def _continue_publish(
  
         # Ảnh đính kèm post: nếu có image_files dùng file, không thì bỏ qua
         # social_image_urls = [f for f in image_files if f.startswith("http")][:1]
-        social_image_urls = drive_image_urls[:1]
+        social_image_urls = drive_image_urls
  
         social_texts = build_social_texts(
             topic          = parsed.topic,
@@ -390,7 +390,7 @@ def _continue_publish(
                         platform=service, channel_name=ch.get("name", ""),
                         channel_id=ch["id"], status="error", error=str(e),
                     )
-                    logger.warning("  → ❌ [%s] %s — %s", service.upper(), ch.get("name"), e)
+                    logger.warning(" → ❌ [%s] %s — %s", service.upper(), ch.get("name"), str(e))
  
                 result.buffer_results.append(br)
  
