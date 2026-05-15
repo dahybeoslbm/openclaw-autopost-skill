@@ -4,6 +4,11 @@ FROM ghcr.io/openclaw/openclaw:latest AS openclaw_base
 # Stage 2: Build the auto-travel-blogger environment
 FROM python:3.10-slim-bullseye
 
+# Thêm 3 dòng này ngay sau FROM
+ENV PYTHONIOENCODING=utf-8
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
 # Install Node.js and npm
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
