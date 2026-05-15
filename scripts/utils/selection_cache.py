@@ -45,7 +45,7 @@ def _make_key(chat_id: str, topic: str) -> str:
 @dataclass
 class PendingSelection:
     candidates: list[dict]
-    platform:   str
+    platform:   list[str]
     schedule:   str
     topic:      str
 

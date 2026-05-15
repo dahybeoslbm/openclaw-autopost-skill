@@ -9,7 +9,7 @@ services:
       - ~/.gemini:/root/.gemini:ro
       - ./output:/app/output
     env_file:
-      - ~/.openclaw/workspace/.env
+      - ~/.openclaw/workspace/.env # ← thêm dòng này để load biến môi trường từ OpenClaw CLI
       - .env
     environment:
       - OUTPUT_DIR=/app/output
