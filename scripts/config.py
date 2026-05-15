@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class GeminiConfig:
     api_key: str
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     timeout: int = 90
     api_url: str = field(init=False)
 
@@ -58,7 +58,7 @@ class BufferConfig:
 @dataclass(frozen=True)
 class OllamaConfig:
     api_key: str
-    model: str = "deepseek-v4-flash"
+    model: str = "gpt-oss:120b"
     host: str = "https://ollama.com"
     timeout: int = 120
 
@@ -111,12 +111,12 @@ def load_config() -> AppConfig:
         ),
         gemini=GeminiConfig(
             api_key=os.environ.get("GEMINI_API_KEY", ""),
-            model=os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
+            model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
             timeout=int(os.environ.get("GEMINI_TIMEOUT", "90")),
         ),
         ollama=OllamaConfig(
             api_key=os.environ.get("OLLAMA_API_KEY", ""),
-            model=os.environ.get("OLLAMA_MODEL", "deepseek-v4-flash"),
+            model=os.environ.get("OLLAMA_MODEL", "gpt-oss:120b"),
             timeout=int(os.environ.get("OLLAMA_TIMEOUT", "120")),
         ),
         wordpress=WordPressConfig(
