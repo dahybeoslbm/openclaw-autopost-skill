@@ -368,6 +368,7 @@ def _continue_publish(
             topic      = parsed.topic,
             title      = drive_article.title,
             plain_text = plain,
+            platforms = buffer_platforms or None,  # None = gen cho tất cả platforms, [] = gen cho 0 platform → không gen gì
         )
         logger.info("  → %d platforms", len(social_captions))
         social_texts = build_social_texts(

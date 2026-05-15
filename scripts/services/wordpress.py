@@ -233,23 +233,35 @@ class WordPressService:
         # 2b. Upload ảnh nhúng trong HTML (từ Google Docs API — URL ngoài)
         #     Tìm tất cả <img src="..."> không phải của WP rồi upload lên Media
         import re
-        for img_url in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_content):
-            # Bỏ qua: đã là WP URL hoặc data URI
-            if img_url.startswith(wp_base) or img_url.startswith("data:"):
-                continue
-            if not img_url.startswith("http"):
-                continue
+        import concurrent.futures
+        
+        img_urls = [
+            url for url in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_content)
+            if not url.startswith(wp_base)
+            and not url.startswith("data:")
+            and url.startswith("http")
+        ]
+        
+        if img_urls:
+            logger.info("  → Upload %d ảnh song song...", len(img_urls))
 
-            logger.info("  → Phát hiện ảnh ngoài trong HTML: %s", img_url[:60])
-            result = self.upload_image_from_url(img_url)
-            if result:
-                media_id, media_url = result
-                html_content = html_content.replace(img_url, media_url)
-                if not featured_media_id:
-                    featured_media_id = media_id
-                logger.info("  → ✅ Ảnh → WP Media: %s", media_url)
-            else:
+            def _upload_one(img_url: str) -> tuple[str, int, str] | None:
+                logger.info("  → Phát hiện ảnh ngoài trong HTML: %s", img_url[:60])
+                result = self.upload_image_from_url(img_url)
+                if result:
+                    media_id, media_url = result
+                    logger.info("  → ✅ Ảnh → WP Media: %s", media_url)
+                    return img_url, media_id, media_url
                 logger.warning("  → ⚠️  Không upload được ảnh: %s", img_url[:60])
+                return None
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+                for outcome in ex.map(_upload_one, img_urls):
+                    if outcome:
+                        original_url, media_id, media_url = outcome
+                        html_content = html_content.replace(original_url, media_url)
+                        if not featured_media_id:
+                            featured_media_id = media_id
 
         # 3. Resolve categories & tags
         category_ids = [

@@ -12,7 +12,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Các status code nên chuyển sang Ollama thay vì retry tiếp
-_OLLAMA_FALLBACK_STATUSES = {429, 503}
+_OLLAMA_FALLBACK_STATUSES = {429, 503, 0}
 class GeminiService:
     def __init__(self, config: GeminiConfig, ollama_config: OllamaConfig | None = None):
         self._config = config
@@ -62,7 +62,14 @@ class GeminiService:
             logger.warning("  → GEMINI_API_KEY chưa được cài đặt.")
             return _FALLBACK_ARTICLE
 
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "thinkingConfig": {
+                    "thinkingBudget": 0   # ← tắt thinking hoàn toàn
+                }
+            }
+        }
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -116,9 +123,35 @@ class GeminiService:
         return "Lỗi tạo nội dung."
 
 
-    def build_social_captions_prompt(self, topic: str, title: str, plain_text: str) -> str:
+    def build_social_captions_prompt(self, topic: str, title: str, plain_text: str, platforms: list[str] | None = None) -> str:
         """Prompt nhẹ — CHỈ sinh social_captions từ plain text. Không format HTML."""
         excerpt = plain_text[:8000]
+        
+        all_specs = {
+            "facebook":        "40-80 ký tự. Câu hấp dẫn, 2-3 emoji, 2 hashtag.",
+            "instagram":       "Dòng đầu hook dưới 125 ký tự. Xuống dòng. 2-3 câu storytelling. Xuống dòng. 3-5 hashtag. Kết: 📍 Link in bio",
+            "twitter":         "Tối đa 80 ký tự. Punchy, 1 hashtag.",
+            "threads":         "Tối đa 500 ký tự. Dòng đầu tiên là tiêu đề/hook ngắn gọn phản ánh chủ đề bài. Tiếp theo liệt kê TẤT CẢ ý chính, mỗi ý 1 dòng (emoji + nội dung cốt lõi). Nếu còn dư ký tự thì thêm chi tiết phụ. Kết bằng 1 câu CTA. KHÔNG hashtag. KHÔNG in nhãn hay tiêu đề phần.",
+            "tiktok":          "Hook câu hỏi hoặc fact bất ngờ. 150-250 ký tự. 3-5 hashtag trending.",
+            "linkedin":        "Mở bằng insight. 700-1000 ký tự, chia đoạn ngắn. 3-4 hashtag. Kết bằng câu hỏi.",
+            "pinterest":       "150-250 ký tự inspirational, bắt đầu bằng động từ. Không hashtag.",
+            "bluesky":         "200-270 ký tự. Direct, witty, không hashtag.",
+            "mastodon":        "300-400 ký tự. 3-4 hashtag du lịch.",
+            "google_business": "300-500 ký tự giới thiệu địa điểm. CTA rõ ràng."
+        }
+        
+         # Lọc chỉ platform cần thiết; None/[] = gen tất cả (trường hợp "blog" / publish all)
+        if platforms:
+            target = {k: v for k, v in all_specs.items() if k in platforms}
+        else:
+            target = all_specs
+
+        # Fallback phòng trường hợp platforms truyền vào không khớp key nào
+        if not target:
+            target = all_specs
+
+        specs_json = json.dumps(target, ensure_ascii=False, indent=2)
+
         return f"""
 Bạn là chuyên gia social media. Đọc nội dung bài viết dưới đây và viết caption phù hợp cho từng nền tảng.
 
@@ -128,26 +161,18 @@ CHỦ ĐỀ: {topic}
 NỘI DUNG:
 {excerpt}
 
-QUY TẮC: Chỉ tóm tắt, trích ý từ nội dung gốc — KHÔNG bịa thêm thông tin.
+QUY TẮC BẮT BUỘC:
+- Chỉ tóm tắt, trích ý từ nội dung gốc — KHÔNG bịa thêm thông tin, địa điểm, giá cả, hay chi tiết không có trong bài.
+- Nếu bài không đề cập giá → không viết giá. Nếu không đề cập địa chỉ cụ thể → không bịa địa chỉ.
+- Giữ đúng tông của bài gốc (review thực tế, không thổi phồng)
 
-Trả về JSON hợp lệ, không thêm text ngoài JSON:
-{{
-  "facebook":        "40-80 ký tự. Câu hấp dẫn, 2-3 emoji, 2 hashtag.",
-  "instagram":       "Dòng đầu hook dưới 125 ký tự. Xuống dòng. 2-3 câu storytelling. Xuống dòng. 3-5 hashtag. Kết: 📍 Link in bio",
-  "twitter":         "Tối đa 80 ký tự. Punchy, 1 hashtag.",
-  "threads":         "Tối đa 500 ký tự. Dòng đầu tiên là tiêu đề/hook ngắn gọn phản ánh chủ đề bài. Tiếp theo liệt kê TẤT CẢ ý chính, mỗi ý 1 dòng (emoji + nội dung cốt lõi). Nếu còn dư ký tự thì thêm chi tiết phụ. Kết bằng 1 câu CTA. KHÔNG hashtag. KHÔNG in nhãn hay tiêu đề phần.",
-  "tiktok":          "Hook câu hỏi hoặc fact bất ngờ. 150-250 ký tự. 3-5 hashtag trending.",
-  "linkedin":        "Mở bằng insight. 700-1000 ký tự, chia đoạn ngắn. 3-4 hashtag. Kết bằng câu hỏi.",
-  "pinterest":       "150-250 ký tự inspirational, bắt đầu bằng động từ. Không hashtag.",
-  "bluesky":         "200-270 ký tự. Direct, witty, không hashtag.",
-  "mastodon":        "300-400 ký tự. 3-4 hashtag du lịch.",
-  "google_business": "300-500 ký tự giới thiệu địa điểm. CTA rõ ràng."
-}}
-""".strip()
+Trả về JSON hợp lệ, không thêm text hay markdown ngoài JSON.
+Chỉ trả về các key sau, không thêm key khác:
+{specs_json}""".strip()
 
-    def generate_social_captions(self, topic: str, title: str, plain_text: str) -> dict:
+    def generate_social_captions(self, topic: str, title: str, plain_text: str, platforms: list[str] | None = None) -> dict:
         """Sinh social_captions từ plain text. Trả về dict (rỗng nếu thất bại)."""
-        prompt = self.build_social_captions_prompt(topic, title, plain_text)
+        prompt = self.build_social_captions_prompt(topic, title, plain_text, platforms)
         raw = self.generate(prompt)
         if not raw or "Lỗi" in raw:
             return {}
