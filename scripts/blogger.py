@@ -37,6 +37,7 @@ from utils.selection_cache import (
     PendingSelection, save_pending, load_any_pending,
     delete_pending, delete_all_pending, purge_expired,
 )
+from utils import buffer_schedule_cache as bsc
 
 logger = get_logger("blogger")
 
@@ -122,6 +123,7 @@ def _worker_buffer(
     drive_image_urls: list[str],
     scheduled_at: str | None,
     buffer_platforms: list[str],         # [] = tất cả channels đã đăng ký
+    article_title: str = "",
 ) -> list[BufferPostResult]:
     """
     Worker chạy trong thread riêng: đăng tất cả Buffer channels.
@@ -145,6 +147,35 @@ def _worker_buffer(
             if not platform_obj:
                 logger.warning("  → [Buffer] '%s' chưa hỗ trợ, bỏ qua", service)
                 continue
+
+            # ── Guard: Buffer free plan giới hạn 10 scheduled posts/account ──
+            api_key_for_ch = (
+                buffer._channel_api_key_map.get(ch["id"]) or cfg.buffer.api_key
+            )
+            if scheduled_at and bsc.is_full(api_key_for_ch):
+                tail    = api_key_for_ch[-4:]
+                pending = bsc.list_active(api_key_for_ch)
+
+                # Format list scheduled posts
+                lines = [f"  {i+1}. [{r['platform'].upper()}] {r['title']}\n     ⏰ {r['scheduled_at'].replace('T', ' ').replace('Z', ' UTC')}"
+                        for i, r in enumerate(pending)]
+                
+                msg = (
+                    f"⚠️ Buffer account ...{tail} đã đạt giới hạn 10 scheduled posts.\n\n"
+                    f"📋 Danh sách bài đang chờ đăng:\n"
+                    + "\n".join(lines) +
+                    f"\n\nChờ bài cũ được đăng xong rồi thử lại."
+                )
+                logger.warning("  → [Buffer] ❌ BUFFER_SCHEDULE_LIMIT:\n%s", msg)
+                results.append(BufferPostResult(
+                    platform     = service,
+                    channel_name = ch.get("name", ""),
+                    channel_id   = ch["id"],
+                    status       = "error",
+                    error        = msg,
+                ))
+                continue
+
 
             try:
                 post = platform_obj.create_post(
@@ -186,7 +217,9 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     wp            = WordPressService(cfg.wordpress)
     drive_service = GoogleDriveService.from_config(cfg.googledrive)
 
+
     purge_expired()
+    bsc.purge_expired()
 
     if _is_cancel(user_prompt):
         delete_all_pending()
@@ -390,6 +423,7 @@ def _continue_publish(
                 drive_image_urls,
                 parsed.schedule_time or None,
                 buffer_platforms,
+                drive_article.title,
             )
 
         # ── Thu kết quả WP ───────────────────────────────────────────────────

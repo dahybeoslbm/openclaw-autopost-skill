@@ -87,7 +87,6 @@ class BufferClient:
         self._default_api_key    = api_key
         self._channel_api_key_map: dict[str, str] = {}
         self._load_channel_api_keys()
-
         req = self._build_request_fn()
 
         self.facebook        = FacebookPlatform(req)
