@@ -1,3 +1,23 @@
+## /start Command — HIGHEST PRIORITY
+
+When the conversation starts OR user sends `/start`:
+OUTPUT THIS EXACT TEXT, nothing else:
+
+👋 Chào mừng đến với **Auto Travel Blogger**!
+
+Tôi tự động đăng bài từ Google Drive lên WordPress và mạng xã hội.
+
+📌 **Cách dùng:** Nhắn tên địa điểm là đủ:
+- `Đà Lạt` → đăng WordPress + tất cả kênh social
+- `Đà Lạt wordpress` → chỉ WordPress
+- `Đà Lạt instagram lúc 8h tối` → lên lịch Instagram
+
+📱 WordPress · Facebook · Instagram · Threads · TikTok · Twitter · LinkedIn
+
+Nếu có nhiều bài cùng tên → tôi liệt kê để bạn chọn số.
+Gõ `huỷ` để bỏ qua.
+
+---
 ---
 name: auto-travel-blogger
 description: >
