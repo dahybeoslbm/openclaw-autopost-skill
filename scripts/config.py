@@ -101,7 +101,11 @@ def load_config() -> AppConfig:
     """
     return AppConfig(
         output_dir=os.environ.get("OUTPUT_DIR", "/app/output"),
-        chat_id=os.environ.get("CHAT_ID", ""),
+        # Ưu tiên CHAT_ID nếu có, fallback lấy ID đầu tiên từ CHAT_IDS
+        chat_id=(
+            os.environ.get("CHAT_ID", "").strip()
+            or os.environ.get("CHAT_IDS", "").split(",")[0].strip()
+        ),
         openclaw=OpenClawConfig(
             bin_path=os.environ.get(
                 "OPENCLAW_BIN",
