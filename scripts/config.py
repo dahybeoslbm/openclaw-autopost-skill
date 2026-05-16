@@ -58,7 +58,7 @@ class BufferConfig:
 @dataclass(frozen=True)
 class OllamaConfig:
     api_key: str
-    model: str = "gpt-oss:120b"
+    model: str = "gpt-oss:20b"
     host: str = "https://ollama.com"
     timeout: int = 120
 
@@ -120,7 +120,7 @@ def load_config() -> AppConfig:
         ),
         ollama=OllamaConfig(
             api_key=os.environ.get("OLLAMA_API_KEY", ""),
-            model=os.environ.get("OLLAMA_MODEL", "gpt-oss:120b"),
+            model=os.environ.get("OLLAMA_MODEL", "gpt-oss:20b"),
             timeout=int(os.environ.get("OLLAMA_TIMEOUT", "120")),
         ),
         wordpress=WordPressConfig(
