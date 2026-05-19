@@ -449,6 +449,24 @@ def _continue_publish(
             url = _img_re.sub(r'https?://localhost(:\d+)?', _actual_base, block["url"])
             drive_image_urls.append(url)
 
+    # ── Guard: 2+ pages và chưa có lựa chọn → hỏi user ─────────────────
+    if should_facebook and selected_page_ids is None and len(cfg.facebook.pages) > 1:
+        save_pending_pages(cfg.chat_id, PendingPageSelection(
+            pages         = cfg.facebook.pages,
+            topic         = parsed.topic,
+            platform      = "facebook",
+            schedule      = parsed.schedule_time,
+            article_id    = drive_article.document_id,
+            article_title = drive_article.title,
+        ))
+        lines = [f"📄 Tìm thấy {len(cfg.facebook.pages)} Facebook Pages. Chọn page muốn đăng:"]
+        for i, pg in enumerate(cfg.facebook.pages):
+            lines.append(f"  {i+1}. {pg['name']}")
+        lines.append("→ Nhập số thứ tự (vd: '1 3'), hoặc 'tất cả' để đăng hết.")
+        lines.append("  (Gõ 'huỷ' để bỏ qua)")
+        print("\n".join(lines))
+        return PublishResult(file_path="", error="PENDING_PAGE_SELECTION")
+    
     # ── Bước 4: Gemini → social captions ────────────────────────────────────
     plain = drive_article.plain_text()
 
@@ -503,23 +521,6 @@ def _continue_publish(
     
     max_workers = len(cfg.wordpress_sites) + 1
     
-# ── Guard: 2+ pages và chưa có lựa chọn → hỏi user ─────────────────
-    if should_facebook and selected_page_ids is None and len(cfg.facebook.pages) > 1:
-        save_pending_pages(cfg.chat_id, PendingPageSelection(
-            pages         = cfg.facebook.pages,
-            topic         = parsed.topic,
-            platform      = "facebook",
-            schedule      = parsed.schedule_time,
-            article_id    = drive_article.document_id,
-            article_title = drive_article.title,
-        ))
-        lines = [f"📄 Tìm thấy {len(cfg.facebook.pages)} Facebook Pages. Chọn page muốn đăng:"]
-        for i, pg in enumerate(cfg.facebook.pages):
-            lines.append(f"  {i+1}. {pg['name']}")
-        lines.append("→ Nhập số thứ tự (vd: '1 3'), hoặc 'tất cả' để đăng hết.")
-        lines.append("  (Gõ 'huỷ' để bỏ qua)")
-        print("\n".join(lines))
-        return PublishResult(file_path="", error="PENDING_PAGE_SELECTION")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         if should_wp:
