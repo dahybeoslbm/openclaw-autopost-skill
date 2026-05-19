@@ -100,7 +100,22 @@ class GoogleDriveAPIConfig:
     @property
     def is_valid(self) -> bool:
         return bool(self.api_url)
+@dataclass(frozen=True)
+class FacebookConfig:
+    pages: list[dict] = field(default_factory=list)
 
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.pages)
+    
+def _load_fb_pages() -> list[dict]:
+    raw = os.environ.get("FACEBOOK_PAGES", "")
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return []
 @dataclass(frozen=True)
 class AppConfig:
     output_dir: str
@@ -112,6 +127,7 @@ class AppConfig:
     wordpress_sites: list[WordPressConfig]
     buffer: BufferConfig
     googledrive: GoogleDriveAPIConfig
+    facebook: FacebookConfig
 
 def load_config() -> AppConfig:
     """
@@ -156,4 +172,5 @@ def load_config() -> AppConfig:
             timeout=int(os.environ.get("GDRIVE_API_TIMEOUT", "30")),
             language=os.environ.get("GDRIVE_LANGUAGE", "vi"),
         ),
+        facebook=FacebookConfig(pages=_load_fb_pages()),
     )
