@@ -114,3 +114,76 @@ def purge_expired() -> int:
             (int(time.time()),)
         )
         return cursor.rowcount
+    
+
+@dataclass
+class PendingPageSelection:
+    pages:         list[dict]   # list pages từ FACEBOOK_PAGES env
+    topic:         str
+    platform:      str          # "facebook"
+    schedule:      str          # ISO 8601 hoặc ""
+    article_id:    str          # document_id đã fetch
+    article_title: str
+    
+# Key prefix riêng để tránh xung đột với selection_cache của bài viết
+_PAGE_KEY_PREFIX = "page_sel:"
+
+def _make_page_key(chat_id: str) -> str:
+    """Một chat_id chỉ có 1 pending page selection tại một thời điểm."""
+    raw = f"{_PAGE_KEY_PREFIX}{chat_id}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def save_pending_pages(chat_id: str, pending: PendingPageSelection) -> None:
+    """Lưu page selection vào cache, TTL 24h (dùng chung bảng selection_cache)."""
+    key     = _make_page_key(chat_id)
+    payload = json.dumps({
+        "pages":         pending.pages,
+        "topic":         pending.topic,
+        "platform":      pending.platform,
+        "schedule":      pending.schedule,
+        "article_id":    pending.article_id,
+        "article_title": pending.article_title,
+        "_type":         "page_selection",   # phân biệt với article selection
+    }, ensure_ascii=False)
+    expires_at = int(time.time()) + _TTL_SECONDS
+
+    with _get_conn() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO selection_cache (cache_key, payload, expires_at)
+            VALUES (?, ?, ?)
+        """, (key, payload, expires_at))
+
+
+def load_pending_pages(chat_id: str) -> PendingPageSelection | None:
+    """Load pending page selection còn hạn."""
+    key = _make_page_key(chat_id)
+    now = int(time.time())
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM selection_cache WHERE cache_key = ? AND expires_at > ?",
+            (key, now)
+        ).fetchone()
+
+    if not row:
+        return None
+
+    data = json.loads(row[0])
+    if data.get("_type") != "page_selection":
+        return None
+
+    return PendingPageSelection(
+        pages         = data["pages"],
+        topic         = data["topic"],
+        platform      = data["platform"],
+        schedule      = data["schedule"],
+        article_id    = data["article_id"],
+        article_title = data["article_title"],
+    )
+
+
+def delete_pending_pages(chat_id: str) -> None:
+    """Xoá page selection sau khi user đã chọn xong."""
+    key = _make_page_key(chat_id)
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))

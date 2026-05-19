@@ -147,3 +147,39 @@ class FacebookService:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
             return list(ex.map(_post_one, targets))
+    
+    def post_to_selected_pages(
+        self,
+        page_ids: list[str],
+        text: str = "",
+        image_urls: list[str] | None = None,
+        video_url: str | None = None,
+        scheduled_at: str | None = None,
+    ) -> list[FacebookPostResult]:
+        """
+        Đăng lên các pages được chọn theo page_ids.
+        Lọc từ self._config.pages — chỉ đăng đúng pages trong danh sách.
+        """
+        targets = [p for p in self._config.pages if p.get("id") in page_ids]
+
+        if not targets:
+            logger.warning("  → [Facebook] Không tìm thấy page nào khớp page_ids: %s", page_ids)
+            return []
+
+        # Tái sử dụng logic song song của post_to_all_pages
+        def _post_one(page: dict) -> FacebookPostResult:
+            pid   = page.get("id", "")
+            token = page.get("access_token", "")
+            name  = page.get("name", pid)
+            try:
+                result = self.post_to_page(pid, token, text, image_urls, video_url, scheduled_at)
+                logger.info("  → [Facebook] ✅ %s | post_id=%s", name, result.get("id", ""))
+                return FacebookPostResult(page_id=pid, page_name=name,
+                                        status="success", post_id=result.get("id", ""))
+            except Exception as exc:
+                logger.warning("  → [Facebook] ❌ %s — %s", name, exc)
+                return FacebookPostResult(page_id=pid, page_name=name,
+                                        status="error", error=str(exc))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            return list(ex.map(_post_one, targets))
