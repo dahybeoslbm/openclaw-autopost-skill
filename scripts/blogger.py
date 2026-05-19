@@ -37,6 +37,8 @@ from services.buffer.social_formatter import build_all as build_social_texts
 from utils.selection_cache import (
     PendingSelection, save_pending, load_any_pending,
     delete_pending, delete_all_pending, purge_expired,
+    PendingPageSelection, save_pending_pages,
+    load_pending_pages, delete_pending_pages,
 )
 from utils import buffer_schedule_cache as bsc
 
@@ -66,6 +68,7 @@ _SERVICE_TO_ATTR = {
 }
 _CANCEL_KEYWORDS = {"huỷ", "huy", "cancel", "thôi", "bỏ"}
 
+_ALL_PAGES_KEYWORDS = {"tất cả", "tat ca", "tatca", "all"}
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _save_to_file(content: str, output_dir: str, topic: str, platform: str, schedule: str) -> str:
@@ -95,6 +98,16 @@ def _is_selection_reply(prompt: str) -> bool:
 def _is_cancel(prompt: str) -> bool:
     return prompt.strip().lower() in _CANCEL_KEYWORDS
 
+def _is_page_selection(prompt: str) -> bool:
+    """
+    Nhận diện reply chọn page: "1", "1 3", "tất cả", "all", v.v.
+    Phân biệt với _is_selection_reply() (chỉ nhận 1 số).
+    """
+    p = prompt.strip().lower()
+    if p in _ALL_PAGES_KEYWORDS:
+        return True
+    # "1", "2", "1 3", "1 2 3" — nhiều số cách nhau khoảng trắng
+    return bool(p) and all(x.isdigit() for x in p.split())
 
 # ── Publish workers (chạy song song) ────────────────────────────────────────
 
@@ -213,15 +226,27 @@ def _worker_facebook(
     drive_image_urls: list[str],
     video_url: str | None,
     scheduled_at: str | None,
+    selected_page_ids: list[str] | None = None,
 ) -> list[FacebookPostResult]:
     """Worker chạy trong thread riêng: đăng tất cả Facebook Pages qua Meta API."""
     fb = FacebookService(cfg_facebook)
-    return fb.post_to_all_pages(
-        text         = text,
-        image_urls   = drive_image_urls or None,
-        video_url    = video_url,
-        scheduled_at = scheduled_at,
-    )
+    if selected_page_ids is not None:
+        # Đăng đúng pages đã chọn
+        return fb.post_to_selected_pages(
+            page_ids     = selected_page_ids,
+            text         = text,
+            image_urls   = drive_image_urls or None,
+            video_url    = video_url,
+            scheduled_at = scheduled_at,
+        )
+    else:
+        # 1 page hoặc đăng tất cả (selected_page_ids=None chỉ đến đây khi len==1)
+        return fb.post_to_all_pages(
+            text         = text,
+            image_urls   = drive_image_urls or None,
+            video_url    = video_url,
+            scheduled_at = scheduled_at,
+        )
     
 
 # ── Main workflow ────────────────────────────────────────────────────────────
@@ -240,6 +265,56 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         delete_all_pending()
         print("❌ Đã huỷ yêu cầu chọn bài.")
         return PublishResult(file_path="")
+
+# ── LƯỢT 2b: User reply chọn page ───────────────────────────────────────────
+    if _is_page_selection(user_prompt):
+        pending_pages = load_pending_pages(cfg.chat_id)
+
+        if pending_pages:
+            p = user_prompt.strip().lower()
+
+            if p in _ALL_PAGES_KEYWORDS:
+                selected_ids = [pg["id"] for pg in pending_pages.pages]
+                selected_names = [pg["name"] for pg in pending_pages.pages]
+            else:
+                raw_indices = [int(x) - 1 for x in p.split() if x.isdigit()]
+                selected = [
+                    pending_pages.pages[i]
+                    for i in raw_indices
+                    if 0 <= i < len(pending_pages.pages)
+                ]
+                if not selected:
+                    print(f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending_pages.pages)}.")
+                    return PublishResult(file_path="", error="INVALID_PAGE_CHOICE")
+
+                selected_ids   = [pg["id"]   for pg in selected]
+                selected_names = [pg["name"] for pg in selected]
+
+            print(f"✅ Đã chọn {len(selected_ids)} page: {', '.join(selected_names)}")
+            delete_pending_pages(cfg.chat_id)
+
+            # Fetch lại article theo document_id đã cache
+            logger.info("[2/6] Fetch lại doc: %s", pending_pages.article_id)
+            try:
+                drive_article = drive_service.fetch_article_by_id(
+                    pending_pages.article_id, cfg.googledrive.language
+                )
+            except RuntimeError as exc:
+                return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
+
+            if not drive_article:
+                return PublishResult(file_path="", error="❌ Doc không còn tồn tại.")
+
+            # Tái sử dụng _continue_publish với override selected_page_ids
+            parsed = ParsedRequest(
+                topic         = pending_pages.topic,
+                platforms     = [pending_pages.platform],
+                schedule_time = pending_pages.schedule,
+            )
+            return _continue_publish(
+                cfg, gemini, drive_article, parsed, webhook_url,
+                selected_page_ids=selected_ids,
+            )
 
     # ── LƯỢT 2: User reply số thứ tự ────────────────────────────────────────
     if _is_selection_reply(user_prompt):
@@ -340,6 +415,7 @@ def _continue_publish(
     drive_article: DriveArticle,
     parsed: ParsedRequest,
     webhook_url: str | None,
+    selected_page_ids: list[str] | None = None, 
 ) -> PublishResult:
     """
     Bước 3→6: xử lý nội dung, lưu file, đăng bài song song.
@@ -377,7 +453,7 @@ def _continue_publish(
     plain = drive_article.plain_text()
 
     social_texts: dict = {}
-    if should_buffer:
+    if should_buffer or should_facebook:
         logger.info("[4/6] Gemini tạo social captions...")
         social_captions = gemini.generate_social_captions(
             topic      = parsed.topic,
@@ -426,6 +502,24 @@ def _continue_publish(
     buffer_future = None
     
     max_workers = len(cfg.wordpress_sites) + 1
+    
+# ── Guard: 2+ pages và chưa có lựa chọn → hỏi user ─────────────────
+    if should_facebook and selected_page_ids is None and len(cfg.facebook.pages) > 1:
+        save_pending_pages(cfg.chat_id, PendingPageSelection(
+            pages         = cfg.facebook.pages,
+            topic         = parsed.topic,
+            platform      = "facebook",
+            schedule      = parsed.schedule_time,
+            article_id    = drive_article.document_id,
+            article_title = drive_article.title,
+        ))
+        lines = [f"📄 Tìm thấy {len(cfg.facebook.pages)} Facebook Pages. Chọn page muốn đăng:"]
+        for i, pg in enumerate(cfg.facebook.pages):
+            lines.append(f"  {i+1}. {pg['name']}")
+        lines.append("→ Nhập số thứ tự (vd: '1 3'), hoặc 'tất cả' để đăng hết.")
+        lines.append("  (Gõ 'huỷ' để bỏ qua)")
+        print("\n".join(lines))
+        return PublishResult(file_path="", error="PENDING_PAGE_SELECTION")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         if should_wp:
@@ -456,6 +550,7 @@ def _continue_publish(
                 drive_image_urls,
                 None,                       # video_url — mở rộng sau nếu cần
                 parsed.schedule_time or None,
+                selected_page_ids, 
             )
 
         # ── Thu kết quả WP ───────────────────────────────────────────────────
@@ -514,7 +609,14 @@ def main():
 
     result = run(user_input, webhook_url)
 
-    non_error_states = {"PENDING_SELECTION", "NO_PENDING_SELECTION", "INVALID_CHOICE", ""}
+    non_error_states = {
+        "PENDING_SELECTION",
+        "PENDING_PAGE_SELECTION",
+        "NO_PENDING_SELECTION",
+        "INVALID_CHOICE",
+        "INVALID_PAGE_CHOICE",
+        "",
+    }
     if result.error and result.error not in non_error_states:
         logger.error("Lỗi: %s", result.error)
         sys.exit(1)
