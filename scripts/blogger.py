@@ -214,7 +214,6 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     cfg = load_config()
 
     gemini        = GeminiService(cfg.gemini, ollama_config=cfg.ollama)
-    wp            = WordPressService(cfg.wordpress)
     drive_service = GoogleDriveService.from_config(cfg.googledrive)
 
 
@@ -264,7 +263,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         if not drive_article:
             return PublishResult(file_path="", error=f"❌ Doc {document_id} không tồn tại.")
 
-        return _continue_publish(cfg, gemini, wp, drive_article, parsed, webhook_url)
+        return _continue_publish(cfg, gemini, drive_article, parsed, webhook_url)
 
     # ── LƯỢT 1: Parse prompt mới ─────────────────────────────────────────────
     parsed = parse_request(user_prompt)
@@ -295,7 +294,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         except RuntimeError as exc:
             return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
 
-        return _continue_publish(cfg, gemini, wp, drive_article, parsed, webhook_url)
+        return _continue_publish(cfg, gemini, drive_article, parsed, webhook_url)
 
     # 2+ kết quả → lưu cache, in list, dừng chờ
     save_pending(cfg.chat_id, parsed.topic, PendingSelection(
@@ -322,7 +321,6 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
 def _continue_publish(
     cfg,
     gemini: GeminiService,
-    wp: WordPressService,
     drive_article: DriveArticle,
     parsed: ParsedRequest,
     webhook_url: str | None,
@@ -407,14 +405,19 @@ def _continue_publish(
     }
     title = drive_article.title
 
-    wp_future     = None
+    wp_futures: list[tuple] = []
     buffer_future = None
+    
+    max_workers = len(cfg.wordpress_sites) + 1
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        if should_wp and cfg.wordpress.is_valid:
-            wp_future = executor.submit(
-                _worker_wordpress, wp, article_data, parsed
-            )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        if should_wp:
+            for site_cfg in cfg.wordpress_sites:
+                if site_cfg.is_valid:
+                    f = executor.submit(
+                        _worker_wordpress, WordPressService(site_cfg), article_data, parsed
+                    )
+                    wp_futures.append((f, site_cfg.site_url))
 
         if should_buffer:
             buffer_future = executor.submit(
@@ -428,23 +431,19 @@ def _continue_publish(
             )
 
         # ── Thu kết quả WP ───────────────────────────────────────────────────
-        if wp_future is not None:
+        for wp_f, site_url in wp_futures:
             try:
-                wp_resp = wp_future.result()
+                wp_resp = wp_f.result()
                 if wp_resp:
-                    result.wp_post_id  = wp_resp["id"]
-                    result.wp_post_url = wp_resp["link"]
-                    result.wp_status   = wp_resp["status"]
-                    logger.info("  → ✅ WordPress: %s", result.wp_post_url)
-
-                    # Nếu publish_all: cập nhật wp_url vào social_texts và re-post
-                    # Không cần: wp_url trong caption là bonus, không ảnh hưởng chất lượng.
-                    # Buffer đã chạy song song rồi — không wait để inject url.
-                    # Trade-off chấp nhận được: tốc độ > có link WP trong caption.
+                    logger.info("  → ✅ WordPress [%s]: %s", site_url, wp_resp["link"])
+                    if result.wp_post_id is None:   # lấy site đầu tiên thành công làm primary
+                        result.wp_post_id  = wp_resp["id"]
+                        result.wp_post_url = wp_resp["link"]
+                        result.wp_status   = wp_resp["status"]
             except Exception as exc:
-                logger.error("  → ❌ WordPress thất bại: %s", exc)
+                logger.error("  → ❌ WordPress [%s] thất bại: %s", site_url, exc)
                 result.error = str(exc)
-
+                
         # ── Thu kết quả Buffer ───────────────────────────────────────────────
         if buffer_future is not None:
             try:
