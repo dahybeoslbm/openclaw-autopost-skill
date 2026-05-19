@@ -122,13 +122,32 @@ class GeminiService:
 
         return "Lỗi tạo nội dung."
 
+    def _normalize_result(self, result: dict, facebook_pages: list[dict] | None) -> dict:
+        if not facebook_pages or len(facebook_pages) <= 1 or "facebook" not in result:
+            return result
+        fb = result["facebook"]
+        if isinstance(fb, str):
+            result["facebook"] = [fb] * len(facebook_pages)
+        elif isinstance(fb, list):
+            while len(fb) < len(facebook_pages):
+                fb.append(fb[-1] if fb else "")
+            result["facebook"] = fb[:len(facebook_pages)]
+        return result
 
-    def build_social_captions_prompt(self, topic: str, title: str, plain_text: str, platforms: list[str] | None = None) -> str:
+    def build_social_captions_prompt(self, topic: str, title: str, plain_text: str, platforms: list[str] | None = None, facebook_pages: list[dict] | None = None) -> str:
         """Prompt nhẹ — CHỈ sinh social_captions từ plain text. Không format HTML."""
         excerpt = plain_text[:8000]
         
         all_specs = {
-            "facebook":        "40-80 ký tự. Câu hấp dẫn, 2-3 emoji, 2 hashtag.",
+            "facebook": (
+                f"JSON array gồm ĐÚNG {len(facebook_pages)} string, "
+                f"mỗi string là 1 caption 40-80 ký tự + 2-3 emoji + 2 hashtag, góc độ khác nhau.\n"
+                f"VÍ DỤ nếu có 2 pages: [\"caption A 🌟 #tag1\", \"caption B ✈️ #tag2\"]\n"
+                f"Pages:\n" +
+                "\n".join(f"  {i+1}. {p.get('name','')}" for i, p in enumerate(facebook_pages))
+                if facebook_pages and len(facebook_pages) > 1
+                else "40-80 ký tự. Câu hấp dẫn, 2-3 emoji, 2 hashtag."
+            ),
             "instagram":       "Dòng đầu hook dưới 125 ký tự. Xuống dòng. 2-3 câu storytelling. Xuống dòng. 3-5 hashtag. Kết: 📍 Link in bio",
             "twitter":         "Tối đa 80 ký tự. Punchy, 1 hashtag.",
             "threads":         "Tối đa 500 ký tự. Dòng đầu tiên là tiêu đề/hook ngắn gọn phản ánh chủ đề bài. Tiếp theo liệt kê TẤT CẢ ý chính, mỗi ý 1 dòng (emoji + nội dung cốt lõi). Nếu còn dư ký tự thì thêm chi tiết phụ. Kết bằng 1 câu CTA. KHÔNG hashtag. KHÔNG in nhãn hay tiêu đề phần.",
@@ -170,9 +189,9 @@ Trả về JSON hợp lệ, không thêm text hay markdown ngoài JSON.
 Chỉ trả về các key sau, không thêm key khác:
 {specs_json}""".strip()
 
-    def generate_social_captions(self, topic: str, title: str, plain_text: str, platforms: list[str] | None = None) -> dict:
+    def generate_social_captions(self, topic: str, title: str, plain_text: str, platforms: list[str] | None = None, facebook_pages: list[dict] | None = None) -> dict:
         """Sinh social_captions từ plain text. Trả về dict (rỗng nếu thất bại)."""
-        prompt = self.build_social_captions_prompt(topic, title, plain_text, platforms)
+        prompt = self.build_social_captions_prompt(topic, title, plain_text, platforms, facebook_pages)
         raw = self.generate(prompt)
         if not raw or "Lỗi" in raw:
             return {}
@@ -185,12 +204,12 @@ Chỉ trả về các key sau, không thêm key khác:
                     if not part:
                         continue
                     try:
-                        return json.loads(part)
+                        return self._normalize_result(json.loads(part), facebook_pages)
                     except json.JSONDecodeError:
                         continue
 
             try:
-                return json.loads(cleaned)
+                return self._normalize_result(json.loads(cleaned), facebook_pages)
             except json.JSONDecodeError:
                 pass
 
@@ -198,7 +217,7 @@ Chỉ trả về các key sau, không thêm key khác:
             end   = cleaned.rfind("}") + 1
             if start != -1 and end > start:
                 try:
-                    return json.loads(cleaned[start:end])
+                    return self._normalize_result(json.loads(cleaned[start:end]), facebook_pages)
                 except json.JSONDecodeError:
                     pass
 

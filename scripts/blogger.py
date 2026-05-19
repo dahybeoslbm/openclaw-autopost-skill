@@ -227,6 +227,7 @@ def _worker_facebook(
     video_url: str | None,
     scheduled_at: str | None,
     selected_page_ids: list[str] | None = None,
+    page_texts: dict[str, str] | None = None,
 ) -> list[FacebookPostResult]:
     """Worker chạy trong thread riêng: đăng tất cả Facebook Pages qua Meta API."""
     fb = FacebookService(cfg_facebook)
@@ -238,6 +239,7 @@ def _worker_facebook(
             image_urls   = drive_image_urls or None,
             video_url    = video_url,
             scheduled_at = scheduled_at,
+            page_texts=page_texts, 
         )
     else:
         # 1 page hoặc đăng tất cả (selected_page_ids=None chỉ đến đây khi len==1)
@@ -246,6 +248,7 @@ def _worker_facebook(
             image_urls   = drive_image_urls or None,
             video_url    = video_url,
             scheduled_at = scheduled_at,
+            page_texts   = page_texts, 
         )
     
 
@@ -470,6 +473,13 @@ def _continue_publish(
     # ── Bước 4: Gemini → social captions ────────────────────────────────────
     plain = drive_article.plain_text()
 
+    pages_to_post: list[dict] = []
+    if should_facebook:
+        if selected_page_ids is not None:
+            pages_to_post = [p for p in cfg.facebook.pages if p.get("id") in selected_page_ids]
+        else:
+            pages_to_post = cfg.facebook.pages
+            
     social_texts: dict = {}
     if should_buffer or should_facebook:
         logger.info("[4/6] Gemini tạo social captions...")
@@ -478,6 +488,7 @@ def _continue_publish(
             title      = drive_article.title,
             plain_text = plain,
             platforms = buffer_platforms or None,  # None = gen cho tất cả platforms, [] = gen cho 0 platform → không gen gì
+            facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
         )
         logger.info("  → %d platforms", len(social_captions))
         social_texts = build_social_texts(
@@ -487,6 +498,13 @@ def _continue_publish(
             wp_url          = "",          # WP URL chưa có — điền sau khi WP xong
             social_captions = social_captions,
         )
+        
+        fb_value = social_captions.get("facebook")
+        facebook_page_texts: dict[str, str] = {}
+        if isinstance(fb_value, list) and len(pages_to_post) > 1:
+            facebook_page_texts = {
+                p["id"]: v for p, v in zip(pages_to_post, fb_value)
+            }
     else:
         logger.info("[4/6] Bỏ qua Gemini (không đăng social)")
 
@@ -551,7 +569,8 @@ def _continue_publish(
                 drive_image_urls,
                 None,                       # video_url — mở rộng sau nếu cần
                 parsed.schedule_time or None,
-                selected_page_ids, 
+                selected_page_ids,
+                facebook_page_texts or None,
             )
 
         # ── Thu kết quả WP ───────────────────────────────────────────────────
