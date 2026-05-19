@@ -13,6 +13,7 @@ import os
 
 import requests
 
+from config import FacebookConfig
 from utils.logger import get_logger
 from utils.models import FacebookPostResult
 
@@ -29,8 +30,8 @@ def _to_unix(iso_str: str) -> int:
 
 class FacebookService:
 
-    def __init__(self):
-        pass
+    def __init__(self, config: FacebookConfig):
+        self._config = config
 
     # ── Post đến 1 page ──────────────────────────────────────────────────────
 
@@ -77,6 +78,12 @@ class FacebookService:
             payload["scheduled_publish_time"] = _to_unix(scheduled_at)
             payload["published"] = False
         resp = requests.post(f"{FB_API_BASE}/{page_id}/photos", data=payload, timeout=30)
+        if not resp.ok:
+            logger.error(
+            "  → [Facebook] HTTP %d | Body: %s", 
+            resp.status_code, 
+            resp.text[:500]   # in tối đa 500 ký tự
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -93,6 +100,13 @@ class FacebookService:
             payload["scheduled_publish_time"] = _to_unix(scheduled_at)
             payload["published"] = False
         resp = requests.post(f"{FB_API_BASE}/{page_id}/videos", data=payload, timeout=60)
+        
+        if not resp.ok:
+            logger.error(
+                "  → [Facebook] HTTP %d | Body: %s", 
+                resp.status_code, 
+                resp.text[:500]   # in tối đa 500 ký tự
+        )
         resp.raise_for_status()
         return resp.json()
 

@@ -45,12 +45,11 @@ logger = get_logger("blogger")
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _BUFFER_PLATFORMS = {
-    "facebook", "instagram", "tiktok", "threads",
+    "instagram", "tiktok", "threads",
     "twitter", "linkedin", "youtube", "bluesky",
     "pinterest", "mastodon", "google_business",
 }
 _SERVICE_TO_ATTR = {
-    "facebook":       "facebook",
     "instagram":      "instagram",
     "tiktok":         "tiktok",
     "threads":        "threads",
@@ -452,6 +451,7 @@ def _continue_publish(
             fb_text = social_texts.get("facebook", {}).get("text", drive_article.title)
             facebook_future = executor.submit(
                 _worker_facebook,
+                cfg.facebook,
                 fb_text,
                 drive_image_urls,
                 None,                       # video_url — mở rộng sau nếu cần
