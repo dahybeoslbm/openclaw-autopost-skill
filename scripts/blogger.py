@@ -20,10 +20,11 @@ from urllib.parse import urlparse as _urlparse
 
 import requests
 
-from config import load_config
+from config import FacebookConfig, load_config
 
+from services.facebook import FacebookService
 from utils.logger import get_logger
-from utils.models import PublishResult, BufferPostResult
+from utils.models import FacebookPostResult, PublishResult, BufferPostResult
 from utils.parser import parse_request
 from services.gemini import GeminiService
 from services.wordpress import WordPressService
@@ -207,6 +208,22 @@ def _worker_buffer(
 
     return results
 
+def _worker_facebook(
+    cfg_facebook: FacebookConfig,
+    text: str,
+    drive_image_urls: list[str],
+    video_url: str | None,
+    scheduled_at: str | None,
+) -> list[FacebookPostResult]:
+    """Worker chạy trong thread riêng: đăng tất cả Facebook Pages qua Meta API."""
+    fb = FacebookService(cfg_facebook)
+    return fb.post_to_all_pages(
+        text         = text,
+        image_urls   = drive_image_urls or None,
+        video_url    = video_url,
+        scheduled_at = scheduled_at,
+    )
+    
 
 # ── Main workflow ────────────────────────────────────────────────────────────
 
@@ -344,6 +361,7 @@ def _continue_publish(
     # Danh sách platform filter cho Buffer ([] = tất cả channels đã đăng ký)
     buffer_platforms = [] if publish_all else buffer_list
 
+    should_facebook = cfg.facebook.is_valid and (publish_all or "facebook" in platforms)
     # ── Bước 3: Thu thập Drive image URLs (cho Buffer) ───────────────────────
     # Buffer dùng URL thẳng từ Drive API, KHÔNG upload lên WP Media
     logger.info("[3/6] Lấy ảnh từ Google Docs (%d ảnh)", drive_article.image_count())
@@ -429,6 +447,16 @@ def _continue_publish(
                 buffer_platforms,
                 drive_article.title,
             )
+        facebook_future = None
+        if should_facebook:
+            fb_text = social_texts.get("facebook", {}).get("text", drive_article.title)
+            facebook_future = executor.submit(
+                _worker_facebook,
+                fb_text,
+                drive_image_urls,
+                None,                       # video_url — mở rộng sau nếu cần
+                parsed.schedule_time or None,
+            )
 
         # ── Thu kết quả WP ───────────────────────────────────────────────────
         for wp_f, site_url in wp_futures:
@@ -455,10 +483,22 @@ def _continue_publish(
                 )
             except Exception as exc:
                 logger.warning("  → ❌ Buffer thất bại: %s", exc)
+                
+        # ── THÊM: Thu kết quả Facebook ────────────────────────────────────────
+        if facebook_future is not None:
+            try:
+                result.facebook_results = facebook_future.result()
+                succeeded = sum(1 for r in result.facebook_results if r.status == "success")
+                logger.info(
+                    "  → Facebook: %d/%d page thành công",
+                    succeeded, len(result.facebook_results),
+                )
+            except Exception as exc:
+                logger.warning("  → ❌ Facebook thất bại: %s", exc)
 
     # ── Log tổng kết ─────────────────────────────────────────────────────────
-    if not should_wp and not should_buffer:
-        logger.info("  → 💾 Chỉ lưu file (WP chưa cấu hình + Buffer không hợp lệ)")
+    if not should_wp and not should_buffer and not should_facebook:
+        logger.info("  → 💾 Chỉ lưu file (WP chưa cấu hình + Buffer không hợp lệ + Facebook không hợp lệ)")
 
     if webhook_url:
         _notify_webhook(webhook_url, title, file_path)

@@ -37,6 +37,15 @@ class BufferPostResult:
     status:       str          # "success" | "error"
     post_id:      str  = ""
     error:        str  = ""
+    
+@dataclass
+class FacebookPostResult:
+    """Kết quả đăng một Page lên Facebook trực tiếp."""
+    page_id:   str
+    page_name: str
+    status:    str          # "success" | "error"
+    post_id:   str = ""
+    error:     str = ""
 
 @dataclass
 class PublishResult:
@@ -46,7 +55,8 @@ class PublishResult:
     wp_post_id: Optional[int] = None
     wp_post_url: Optional[str] = None
     wp_status: Optional[str] = None
-    buffer_results: list["BufferPostResult"] = field(default_factory=list) 
+    buffer_results: list["BufferPostResult"] = field(default_factory=list)
+    facebook_results: list["FacebookPostResult"] = field(default_factory=list)
 
     @property
     def posted_to_wp(self) -> bool:
@@ -59,3 +69,7 @@ class PublishResult:
     @property
     def has_error(self) -> bool: 
         return bool(self.error)
+    
+    @property
+    def posted_to_facebook(self) -> bool:
+        return any(r.status == "success" for r in self.facebook_results)
