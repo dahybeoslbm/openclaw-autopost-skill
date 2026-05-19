@@ -100,7 +100,11 @@ def build_all(
     fallback = excerpt or title
 
     return {
-        "facebook":       for_facebook(sc.get("facebook", fallback), wp_url),
+        "facebook": for_facebook(
+            sc.get("facebook", fallback) if not isinstance(sc.get("facebook"), list)
+            else (sc["facebook"][0] if sc["facebook"] else fallback),
+            wp_url
+        ),
         "instagram":      for_instagram(sc.get("instagram", fallback)),
         "twitter":        for_twitter(sc.get("twitter", title), wp_url),
         "threads":        for_threads(sc.get("threads", fallback), wp_url),

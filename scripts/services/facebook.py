@@ -21,6 +21,13 @@ logger = get_logger(__name__)
 
 FB_API_BASE = "https://graph.facebook.com/v25.0"
 
+_FIXED_FOOTER = """Comment "Tư vấn" hoặc liên hệ Hotline: 1900636060 để nhận báo giá cực sốc!
+Bắt đầu hành trình của bạn ngay tại:
+Website: https://timchuyenbay.vn/
+Cần tư vấn chặng bay êm ái, giá mềm? Nhắn ngay cho chúng mình:
+Zalo: https://zalo.me/2941581384627345950
+Ghé thăm chúng mình tại: https://maps.app.goo.gl/uMhLZedph1ki9rgd7?g_st=ic"""
+
 
 def _to_unix(iso_str: str) -> int:
     """Chuyển ISO 8601 UTC ('2026-05-20T13:00:00Z') → Unix timestamp."""
@@ -33,8 +40,10 @@ class FacebookService:
     def __init__(self, config: FacebookConfig):
         self._config = config
 
+    def _build_caption(self, text: str) -> str:
+        return f"{text}\n\n{_FIXED_FOOTER}"
+    
     # ── Post đến 1 page ──────────────────────────────────────────────────────
-
     def post_to_page(
         self,
         page_id: str,
@@ -118,6 +127,7 @@ class FacebookService:
         image_urls: list[str] | None = None,
         video_url: str | None = None,
         scheduled_at: str | None = None,
+        page_texts: dict[str, str] | None = None
     ) -> list[FacebookPostResult]:
         """Đăng lên tất cả pages trong FACEBOOK_PAGES song song."""
         targets = self._config.pages
@@ -130,8 +140,9 @@ class FacebookService:
             token = page.get("access_token", "")
             name  = page.get("name", pid)
             try:
+                caption = self._build_caption((page_texts or {}).get(pid, text))
                 result = self.post_to_page(
-                    pid, token, text, image_urls, video_url, scheduled_at
+                    pid, token, caption, image_urls, video_url, scheduled_at
                 )
                 logger.info("  → [Facebook] ✅ %s | post_id=%s", name, result.get("id", ""))
                 return FacebookPostResult(
@@ -155,6 +166,7 @@ class FacebookService:
         image_urls: list[str] | None = None,
         video_url: str | None = None,
         scheduled_at: str | None = None,
+        page_texts: dict[str, str] | None = None
     ) -> list[FacebookPostResult]:
         """
         Đăng lên các pages được chọn theo page_ids.
@@ -172,7 +184,8 @@ class FacebookService:
             token = page.get("access_token", "")
             name  = page.get("name", pid)
             try:
-                result = self.post_to_page(pid, token, text, image_urls, video_url, scheduled_at)
+                caption = self._build_caption((page_texts or {}).get(pid, text))
+                result = self.post_to_page(pid, token, caption, image_urls, video_url, scheduled_at)
                 logger.info("  → [Facebook] ✅ %s | post_id=%s", name, result.get("id", ""))
                 return FacebookPostResult(page_id=pid, page_name=name,
                                         status="success", post_id=result.get("id", ""))
