@@ -3,6 +3,7 @@ config.py — Tập trung toàn bộ cấu hình từ environment variables.
 Không hardcode bất kỳ credential nào ở đây.
 """
 import os
+import json
 from dataclasses import dataclass, field
 
 
@@ -39,6 +40,23 @@ class WordPressConfig:
     def api_base(self) -> str:
         return f"{self.site_url.rstrip('/')}/wp-json/wp/v2"
 
+def _load_wp_sites(timeout: int) -> list[WordPressConfig]:
+    raw = os.environ.get("WP_SITES")
+    if not raw:
+        return []
+    try:
+        return [
+            WordPressConfig(
+                site_url=s["url"],
+                username=s["username"],
+                app_password=s["app_password"],
+                timeout=timeout,
+            )
+            for s in json.loads(raw)
+            if s.get("url") and s.get("username") and s.get("app_password")
+        ]
+    except (json.JSONDecodeError, KeyError):
+        return []
 
 @dataclass(frozen=True)
 class OpenClawConfig:
@@ -91,6 +109,7 @@ class AppConfig:
     gemini: GeminiConfig
     ollama: OllamaConfig
     wordpress: WordPressConfig
+    wordpress_sites: list[WordPressConfig]
     buffer: BufferConfig
     googledrive: GoogleDriveAPIConfig
 
@@ -99,6 +118,8 @@ def load_config() -> AppConfig:
     Load và validate toàn bộ config từ environment.
     Gọi 1 lần duy nhất ở đầu chương trình.
     """
+    wp_timeout = int(os.environ.get("WP_TIMEOUT", "15")) 
+    wp_sites   = _load_wp_sites(wp_timeout)
     return AppConfig(
         output_dir=os.environ.get("OUTPUT_DIR", "/app/output"),
         # Ưu tiên CHAT_ID nếu có, fallback lấy ID đầu tiên từ CHAT_IDS
@@ -123,12 +144,10 @@ def load_config() -> AppConfig:
             model=os.environ.get("OLLAMA_MODEL", "gpt-oss:20b"),
             timeout=int(os.environ.get("OLLAMA_TIMEOUT", "120")),
         ),
-        wordpress=WordPressConfig(
-            site_url=os.environ.get("WP_SITE_URL", ""),
-            username=os.environ.get("WP_USERNAME", ""),
-            app_password=os.environ.get("WP_APP_PASSWORD", ""),
-            timeout=int(os.environ.get("WP_TIMEOUT", "15")),
+        wordpress=wp_sites[0] if wp_sites else WordPressConfig(
+            site_url="", username="", app_password=""
         ),
+        wordpress_sites=wp_sites,
         buffer=BufferConfig(
             api_key=os.environ.get("BUFFER_API_KEY", ""),
         ),
