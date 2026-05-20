@@ -71,7 +71,22 @@ _SERVICE_TO_ATTR = {
 _CANCEL_KEYWORDS = {"huỷ", "huy", "cancel", "thôi", "bỏ"}
 
 _ALL_PAGES_KEYWORDS = {"tất cả", "tat ca", "tatca", "all"}
+
+_BACKUP_TTL_SECONDS = 7 * 86400  # 7 ngày
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _cleanup_old_backups(output_dir: str) -> None:
+    cutoff = time.time() - _BACKUP_TTL_SECONDS
+    for fname in os.listdir(output_dir):
+        if not (fname.startswith("travel_blog_") and fname.endswith(".md")):
+            continue
+        fpath = os.path.join(output_dir, fname)
+        try:
+            if os.path.getmtime(fpath) < cutoff:
+                os.remove(fpath)
+                logger.info("  → 🗑️  Xoá backup hết TTL: %s", fname)
+        except OSError as e:
+            logger.warning("  → Không xoá được %s: %s", fname, e)
 
 def _save_to_file(content: str, output_dir: str, topic: str, platform: str, schedule: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
@@ -79,6 +94,7 @@ def _save_to_file(content: str, output_dir: str, topic: str, platform: str, sche
     header = f"---\nTopic: {topic}\nSchedule: {schedule}\nPlatform: {platform}\n---\n\n"
     with open(path, "w", encoding="utf-8") as f:
         f.write(header + content)
+    _cleanup_old_backups(output_dir)
     return path
 
 
@@ -201,6 +217,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
 
     purge_expired()
     bsc.purge_expired()
+    _cleanup_old_backups(cfg.output_dir)
 
     if _is_cancel(user_prompt):
         delete_all_pending()
@@ -235,16 +252,20 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
             delete_pending_pages(cfg.chat_id)
 
             # Fetch lại article theo document_id đã cache
-            logger.info("[2/6] Fetch lại doc: %s", pending_pages.article_id)
-            try:
-                drive_article = drive_service.fetch_article_by_id(
-                    pending_pages.article_id, cfg.googledrive.language
-                )
-            except RuntimeError as exc:
-                return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
+            if pending_pages.article_data:
+                logger.info("[2/6] Dùng article từ cache, bỏ qua re-fetch")
+                drive_article = DriveArticle(**pending_pages.article_data)
+            else:
+                logger.info("[2/6] Fetch lại doc: %s", pending_pages.article_id)
+                try:
+                    drive_article = drive_service.fetch_article_by_id(
+                        pending_pages.article_id, cfg.googledrive.language
+                    )
+                except RuntimeError as exc:
+                    return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
 
-            if not drive_article:
-                return PublishResult(file_path="", error="❌ Doc không còn tồn tại.")
+                if not drive_article:
+                    return PublishResult(file_path="", error="❌ Doc không còn tồn tại.")
 
             # Tái sử dụng _continue_publish với override selected_page_ids
             parsed = ParsedRequest(
@@ -274,15 +295,17 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
 
             print(f"✅ Đã chọn {len(selected_urls)} site: {', '.join(selected_urls)}")
             delete_pending_wp_sites(cfg.chat_id)
-
-            try:
-                drive_article = drive_service.fetch_article_by_id(
-                    pending_wp.article_id, cfg.googledrive.language
-                )
-            except RuntimeError as exc:
-                return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
-            if not drive_article:
-                return PublishResult(file_path="", error="❌ Doc không còn tồn tại.")
+            if pending_wp.article_data:
+                drive_article = DriveArticle(**pending_wp.article_data)
+            else: 
+                try:
+                    drive_article = drive_service.fetch_article_by_id(
+                        pending_wp.article_id, cfg.googledrive.language
+                    )
+                except RuntimeError as exc:
+                    return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
+                if not drive_article:
+                    return PublishResult(file_path="", error="❌ Doc không còn tồn tại.")
 
             parsed = ParsedRequest(
                 topic=pending_wp.topic,
@@ -437,6 +460,7 @@ def _continue_publish(
             schedule      = parsed.schedule_time,
             article_id    = drive_article.document_id,
             article_title = drive_article.title,
+            article_data  = drive_article.to_dict(),
             selected_wp_site_urls = selected_wp_site_urls,
         ))
         lines = [f"📄 Tìm thấy {len(cfg.facebook.pages)} Facebook Pages. Chọn page muốn đăng:"]
@@ -456,6 +480,7 @@ def _continue_publish(
             schedule      = parsed.schedule_time,
             article_id    = drive_article.document_id,
             article_title = drive_article.title,
+            article_data  = drive_article.to_dict(),
             selected_page_ids = selected_page_ids,
         ))
         lines = [f"🌐 Tìm thấy {len(valid_wp_sites)} WordPress sites. Chọn site muốn đăng:"]

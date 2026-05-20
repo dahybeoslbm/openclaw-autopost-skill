@@ -124,6 +124,7 @@ class PendingPageSelection:
     schedule:      str          # ISO 8601 hoặc ""
     article_id:    str          # document_id đã fetch
     article_title: str
+    article_data:  dict | None = None 
     selected_wp_site_urls: list[str] | None = None
     
 # Key prefix riêng để tránh xung đột với selection_cache của bài viết
@@ -145,6 +146,7 @@ def save_pending_pages(chat_id: str, pending: PendingPageSelection) -> None:
         "schedule":      pending.schedule,
         "article_id":    pending.article_id,
         "article_title": pending.article_title,
+        "article_data":  pending.article_data,
         "selected_wp_site_urls": pending.selected_wp_site_urls,
         "_type":         "page_selection",   # phân biệt với article selection
     }, ensure_ascii=False)
@@ -181,6 +183,7 @@ def load_pending_pages(chat_id: str) -> PendingPageSelection | None:
         schedule      = data["schedule"],
         article_id    = data["article_id"],
         article_title = data["article_title"],
+        article_data  = data.get("article_data"), 
         selected_wp_site_urls = data.get("selected_wp_site_urls"),
     )
 
@@ -200,6 +203,7 @@ class PendingWPSiteSelection:
     schedule:      str
     article_id:    str
     article_title: str
+    article_data:  dict | None = None 
     selected_page_ids: list[str] | None = None
 
 _WP_SITE_KEY_PREFIX = "wp_site_sel:"
@@ -215,6 +219,7 @@ def save_pending_wp_sites(chat_id: str, pending: PendingWPSiteSelection) -> None
         "platforms": pending.platforms, "schedule": pending.schedule,
         "article_id": pending.article_id, "article_title": pending.article_title,
         "selected_page_ids": pending.selected_page_ids,
+        "article_data": pending.article_data,
         "_type": "wp_site_selection",
     }, ensure_ascii=False)
     expires_at = int(time.time()) + _TTL_SECONDS
@@ -241,6 +246,7 @@ def load_pending_wp_sites(chat_id: str) -> "PendingWPSiteSelection | None":
         schedule=data["schedule"], article_id=data["article_id"],
         article_title=data["article_title"],
         selected_page_ids=data.get("selected_page_ids"),
+        article_data=data.get("article_data"),  
     )
 
 def delete_pending_wp_sites(chat_id: str) -> None:

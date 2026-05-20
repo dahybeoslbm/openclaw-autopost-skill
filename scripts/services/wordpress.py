@@ -235,12 +235,12 @@ class WordPressService:
         import re
         import concurrent.futures
         
-        img_urls = [
+        img_urls = list(dict.fromkeys(
             url for url in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_content)
             if not url.startswith(wp_base)
             and not url.startswith("data:")
             and url.startswith("http")
-        ]
+        ))
         
         if img_urls:
             logger.info("  → Upload %d ảnh song song...", len(img_urls))

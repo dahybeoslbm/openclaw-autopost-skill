@@ -60,7 +60,6 @@ _SKIP_VALUES = {
     },
 }
 
-
 def _filter_style(style_value: str) -> str:
     """
     Lọc style attribute: chỉ giữ lại properties có nghĩa thực.
@@ -167,6 +166,16 @@ class DriveArticle:
     def image_count(self) -> int:
         return sum(1 for b in self.content_blocks if b.get("type") == "image")
 
+    def to_dict(self) -> dict:
+        return {
+            "document_id":    self.document_id,
+            "document_url":   self.document_url,
+            "title":          self.title,
+            "content":        self.content,
+            "content_blocks": self.content_blocks,
+            "keywords":       self.keywords,
+            "modified_date":  self.modified_date,
+        }
 
 
 # ── Service ──────────────────────────────────────────────────────────────────
