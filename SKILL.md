@@ -1,3 +1,14 @@
+---
+name: auto-travel-blogger
+description: >
+  Tự động đăng bài du lịch từ Google Docs lên WordPress và/hoặc mạng xã hội
+  (Facebook, Instagram, Threads, v.v.) thông qua Buffer. Kích hoạt khi người
+  dùng yêu cầu viết bài, đăng bài, post bài về một địa điểm/chủ đề du lịch,
+  hoặc muốn publish nội dung từ Google Drive lên blog/social media. Dùng skill
+  này ngay cả khi người dùng chỉ nói "đăng bài về Đà Lạt" hay "post bài Hội An
+  lên Facebook" — không cần yêu cầu chi tiết hơn.
+---
+
 ## /start Command — HIGHEST PRIORITY
 
 When the conversation starts OR user sends `/start`:
@@ -16,18 +27,6 @@ Tôi tự động đăng bài từ Google Drive lên WordPress và mạng xã h�
 
 Nếu có nhiều bài cùng tên → tôi liệt kê để bạn chọn số.
 Gõ `huỷ` để bỏ qua.
-
----
----
-name: auto-travel-blogger
-description: >
-  Tự động đăng bài du lịch từ Google Docs lên WordPress và/hoặc mạng xã hội
-  (Facebook, Instagram, Threads, v.v.) thông qua Buffer. Kích hoạt khi người
-  dùng yêu cầu viết bài, đăng bài, post bài về một địa điểm/chủ đề du lịch,
-  hoặc muốn publish nội dung từ Google Drive lên blog/social media. Dùng skill
-  này ngay cả khi người dùng chỉ nói "đăng bài về Đà Lạt" hay "post bài Hội An
-  lên Facebook" — không cần yêu cầu chi tiết hơn.
----
 
 # Auto Travel Blogger
 

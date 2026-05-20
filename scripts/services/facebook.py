@@ -10,6 +10,7 @@ import concurrent.futures
 import datetime
 import json
 import os
+from time import sleep
 
 import requests
 
@@ -82,8 +83,16 @@ class FacebookService:
             "published": "false",
             "access_token": token,
         }
-        resp = requests.post(f"{FB_API_BASE}/{page_id}/photos", data=payload, timeout=30)
-        if not resp.ok:
+        for attempt in range(1, 4):
+            resp = requests.post(f"{FB_API_BASE}/{page_id}/photos", data=payload, timeout=30)
+            if resp.ok:
+                return resp.json().get("id")
+            if resp.status_code == 500 and attempt < 3:
+                logger.warning(
+                    "  → [Facebook] Upload ảnh HTTP 500 (transient), thử lại %d/3...", attempt
+                )
+                sleep(0.5)
+                continue
             logger.warning("  → [Facebook] Upload ảnh thất bại: %s", resp.text[:200])
             return None
         return resp.json().get("id")
@@ -119,8 +128,16 @@ class FacebookService:
             payload["scheduled_publish_time"] = _to_unix(scheduled_at)
             payload["published"] = "false"
 
-        resp = requests.post(f"{FB_API_BASE}/{page_id}/feed", data=payload, timeout=30)
-        if not resp.ok:
+        for attempt in range(1, 4):
+            resp = requests.post(f"{FB_API_BASE}/{page_id}/feed", data=payload, timeout=30)
+            if resp.ok:
+                return resp.json()
+            if resp.status_code == 500 and attempt < 3:
+                logger.warning(
+                    "  → [Facebook] Feed post HTTP 500 (transient), thử lại %d/3...", attempt
+                )
+                sleep(0.5)
+                continue
             logger.error("  → [Facebook] Multi-photo thất bại: HTTP %d | %s",
                         resp.status_code, resp.text[:500])
             resp.raise_for_status()
