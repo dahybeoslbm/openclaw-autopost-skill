@@ -120,10 +120,11 @@ def purge_expired() -> int:
 class PendingPageSelection:
     pages:         list[dict]   # list pages từ FACEBOOK_PAGES env
     topic:         str
-    platform:      str          # "facebook"
+    platforms:     list[str]
     schedule:      str          # ISO 8601 hoặc ""
     article_id:    str          # document_id đã fetch
     article_title: str
+    selected_wp_site_urls: list[str] | None = None
     
 # Key prefix riêng để tránh xung đột với selection_cache của bài viết
 _PAGE_KEY_PREFIX = "page_sel:"
@@ -140,10 +141,11 @@ def save_pending_pages(chat_id: str, pending: PendingPageSelection) -> None:
     payload = json.dumps({
         "pages":         pending.pages,
         "topic":         pending.topic,
-        "platform":      pending.platform,
+        "platforms":     pending.platforms,
         "schedule":      pending.schedule,
         "article_id":    pending.article_id,
         "article_title": pending.article_title,
+        "selected_wp_site_urls": pending.selected_wp_site_urls,
         "_type":         "page_selection",   # phân biệt với article selection
     }, ensure_ascii=False)
     expires_at = int(time.time()) + _TTL_SECONDS
@@ -175,10 +177,11 @@ def load_pending_pages(chat_id: str) -> PendingPageSelection | None:
     return PendingPageSelection(
         pages         = data["pages"],
         topic         = data["topic"],
-        platform      = data["platform"],
+        platforms     = data.get("platforms") or [data.get("platform", "facebook")],  # backward-compat
         schedule      = data["schedule"],
         article_id    = data["article_id"],
         article_title = data["article_title"],
+        selected_wp_site_urls = data.get("selected_wp_site_urls"),
     )
 
 
@@ -197,6 +200,7 @@ class PendingWPSiteSelection:
     schedule:      str
     article_id:    str
     article_title: str
+    selected_page_ids: list[str] | None = None
 
 _WP_SITE_KEY_PREFIX = "wp_site_sel:"
 
@@ -210,6 +214,7 @@ def save_pending_wp_sites(chat_id: str, pending: PendingWPSiteSelection) -> None
         "sites": pending.sites, "topic": pending.topic,
         "platforms": pending.platforms, "schedule": pending.schedule,
         "article_id": pending.article_id, "article_title": pending.article_title,
+        "selected_page_ids": pending.selected_page_ids,
         "_type": "wp_site_selection",
     }, ensure_ascii=False)
     expires_at = int(time.time()) + _TTL_SECONDS
@@ -235,6 +240,7 @@ def load_pending_wp_sites(chat_id: str) -> "PendingWPSiteSelection | None":
         sites=data["sites"], topic=data["topic"], platforms=data["platforms"],
         schedule=data["schedule"], article_id=data["article_id"],
         article_title=data["article_title"],
+        selected_page_ids=data.get("selected_page_ids"),
     )
 
 def delete_pending_wp_sites(chat_id: str) -> None:
