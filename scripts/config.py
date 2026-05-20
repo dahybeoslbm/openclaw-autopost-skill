@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class GeminiConfig:
     api_key: str
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.5-flash"
     timeout: int = 90
     api_url: str = field(init=False)
 
@@ -152,7 +152,7 @@ def load_config() -> AppConfig:
         ),
         gemini=GeminiConfig(
             api_key=os.environ.get("GEMINI_API_KEY", ""),
-            model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+            model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash"),
             timeout=int(os.environ.get("GEMINI_TIMEOUT", "90")),
         ),
         ollama=OllamaConfig(

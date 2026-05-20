@@ -146,77 +146,13 @@ def _worker_buffer(
     """
     results: list[BufferPostResult] = []
     try:
-        buffer  = BufferClient(api_key=cfg.buffer.api_key)
-        targets = buffer.get_channels_from_env(buffer_platforms or None)
-
-        if not targets:
-            logger.warning("  → [Buffer] Không tìm thấy channel nào trong .env")
-            return results
-
-        for ch in targets:
-            service      = (ch.get("service") or "").lower()
-            post_opts    = social_texts.get(service) or social_texts.get("facebook", {})
-            attr         = _SERVICE_TO_ATTR.get(service)
-            platform_obj = getattr(buffer, attr, None) if attr else None
-
-            if not platform_obj:
-                logger.warning("  → [Buffer] '%s' chưa hỗ trợ, bỏ qua", service)
-                continue
-
-            # ── Guard: Buffer free plan giới hạn 10 scheduled posts/account ──
-            api_key_for_ch = (
-                buffer._channel_api_key_map.get(ch["id"]) or cfg.buffer.api_key
-            )
-            if scheduled_at and bsc.is_full(api_key_for_ch):
-                tail    = api_key_for_ch[-4:]
-                pending = bsc.list_active(api_key_for_ch)
-
-                # Format list scheduled posts
-                lines = [f"  {i+1}. [{r['platform'].upper()}] {r['title']}\n     ⏰ {r['scheduled_at'].replace('T', ' ').replace('Z', ' UTC')}"
-                        for i, r in enumerate(pending)]
-                
-                msg = (
-                    f"⚠️ Buffer account ...{tail} đã đạt giới hạn 10 scheduled posts.\n\n"
-                    f"📋 Danh sách bài đang chờ đăng:\n"
-                    + "\n".join(lines) +
-                    f"\n\nChờ bài cũ được đăng xong rồi thử lại."
-                )
-                logger.warning("  → [Buffer] ❌ BUFFER_SCHEDULE_LIMIT:\n%s", msg)
-                results.append(BufferPostResult(
-                    platform     = service,
-                    channel_name = ch.get("name", ""),
-                    channel_id   = ch["id"],
-                    status       = "error",
-                    error        = msg,
-                ))
-                continue
-
-
-            try:
-                post = platform_obj.create_post(
-                    ch["id"],
-                    text         = post_opts.get("text", ""),
-                    image_urls   = drive_image_urls or None,
-                    scheduled_at = scheduled_at,
-                )
-                results.append(BufferPostResult(
-                    platform     = service,
-                    channel_name = ch.get("name", ""),
-                    channel_id   = ch["id"],
-                    status       = "success",
-                    post_id      = post.get("id", ""),
-                ))
-                logger.info("  → [Buffer] ✅ [%s] %s", service.upper(), ch.get("name"))
-            except Exception as e:
-                results.append(BufferPostResult(
-                    platform     = service,
-                    channel_name = ch.get("name", ""),
-                    channel_id   = ch["id"],
-                    status       = "error",
-                    error        = str(e),
-                ))
-                logger.warning("  → [Buffer] ❌ [%s] %s — %s", service.upper(), ch.get("name"), e)
-
+        buffer = BufferClient(api_key=cfg.buffer.api_key)
+        return buffer.post_all_channels(
+            social_texts = social_texts,
+            image_urls   = drive_image_urls,
+            scheduled_at = scheduled_at,
+            platforms    = buffer_platforms or None,
+        )
     except Exception as e:
         logger.warning("  → [Buffer] Lỗi khởi tạo: %s", e)
 
@@ -543,11 +479,20 @@ def _continue_publish(
     social_texts: dict = {}
     if should_buffer or should_facebook:
         logger.info("[4/6] Gemini tạo social captions...")
+        
+        gemini_platforms: list[str] | None = None
+        if not publish_all:
+            gemini_platforms = list(buffer_platforms)  # copy
+            if should_facebook:
+                gemini_platforms.append("facebook")
+            if not gemini_platforms:
+                gemini_platforms = None  # thực sự không cần gen gì
+                
         social_captions = gemini.generate_social_captions(
             topic      = parsed.topic,
             title      = drive_article.title,
             plain_text = plain,
-            platforms = buffer_platforms or None,  # None = gen cho tất cả platforms, [] = gen cho 0 platform → không gen gì
+            platforms = gemini_platforms,
             facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
         )
         logger.info("  → %d platforms", len(social_captions))
@@ -597,7 +542,7 @@ def _continue_publish(
     wp_futures: list[tuple] = []
     buffer_future = None
     
-    max_workers = len(cfg.wordpress_sites) + 1
+    max_workers = len(cfg.wordpress_sites) + 2
     wp_sites_to_publish = (
         [s for s in cfg.wordpress_sites if s.site_url in selected_wp_site_urls]
         if selected_wp_site_urls is not None
