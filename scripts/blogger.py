@@ -39,6 +39,8 @@ from utils.selection_cache import (
     delete_pending, delete_all_pending, purge_expired,
     PendingPageSelection, save_pending_pages,
     load_pending_pages, delete_pending_pages,
+    PendingWPSiteSelection, save_pending_wp_sites,
+    load_pending_wp_sites, delete_pending_wp_sites,
 )
 from utils import buffer_schedule_cache as bsc
 
@@ -319,6 +321,41 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
                 selected_page_ids=selected_ids,
             )
 
+        pending_wp = load_pending_wp_sites(cfg.chat_id)
+        if pending_wp:
+            p = user_prompt.strip().lower()
+            if p in _ALL_PAGES_KEYWORDS:
+                selected_urls = [s["url"] for s in pending_wp.sites]
+            else:
+                raw_indices = [int(x) - 1 for x in p.split() if x.isdigit()]
+                selected = [pending_wp.sites[i] for i in raw_indices
+                            if 0 <= i < len(pending_wp.sites)]
+                if not selected:
+                    print(f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending_wp.sites)}.")
+                    return PublishResult(file_path="", error="INVALID_WP_SITE_CHOICE")
+                selected_urls = [s["url"] for s in selected]
+
+            print(f"✅ Đã chọn {len(selected_urls)} site: {', '.join(selected_urls)}")
+            delete_pending_wp_sites(cfg.chat_id)
+
+            try:
+                drive_article = drive_service.fetch_article_by_id(
+                    pending_wp.article_id, cfg.googledrive.language
+                )
+            except RuntimeError as exc:
+                return PublishResult(file_path="", error=f"❌ Fetch thất bại: {exc}")
+            if not drive_article:
+                return PublishResult(file_path="", error="❌ Doc không còn tồn tại.")
+
+            parsed = ParsedRequest(
+                topic=pending_wp.topic,
+                platforms=pending_wp.platforms,
+                schedule_time=pending_wp.schedule,
+            )
+            return _continue_publish(
+                cfg, gemini, drive_article, parsed, webhook_url,
+                selected_wp_site_urls=selected_urls,
+            )
     # ── LƯỢT 2: User reply số thứ tự ────────────────────────────────────────
     if _is_selection_reply(user_prompt):
         choice  = int(user_prompt.strip())
@@ -418,7 +455,8 @@ def _continue_publish(
     drive_article: DriveArticle,
     parsed: ParsedRequest,
     webhook_url: str | None,
-    selected_page_ids: list[str] | None = None, 
+    selected_page_ids: list[str] | None = None,
+    selected_wp_site_urls: list[str] | None = None,  
 ) -> PublishResult:
     """
     Bước 3→6: xử lý nội dung, lưu file, đăng bài song song.
@@ -469,6 +507,24 @@ def _continue_publish(
         lines.append("  (Gõ 'huỷ' để bỏ qua)")
         print("\n".join(lines))
         return PublishResult(file_path="", error="PENDING_PAGE_SELECTION")
+    
+    valid_wp_sites = [s for s in cfg.wordpress_sites if s.is_valid]
+    if should_wp and selected_wp_site_urls is None and len(valid_wp_sites) > 1:
+        save_pending_wp_sites(cfg.chat_id, PendingWPSiteSelection(
+            sites         = [{"url": s.site_url} for s in valid_wp_sites],
+            topic         = parsed.topic,
+            platforms     = parsed.platforms,
+            schedule      = parsed.schedule_time,
+            article_id    = drive_article.document_id,
+            article_title = drive_article.title,
+        ))
+        lines = [f"🌐 Tìm thấy {len(valid_wp_sites)} WordPress sites. Chọn site muốn đăng:"]
+        for i, s in enumerate(valid_wp_sites):
+            lines.append(f"  {i+1}. {s.site_url}")
+        lines.append("→ Nhập số thứ tự (vd: '1 3'), hoặc 'tất cả' để đăng hết.")
+        lines.append("  (Gõ 'huỷ' để bỏ qua)")
+        print("\n".join(lines))
+        return PublishResult(file_path="", error="PENDING_WP_SITE_SELECTION")
     
     # ── Bước 4: Gemini → social captions ────────────────────────────────────
     plain = drive_article.plain_text()
@@ -538,11 +594,15 @@ def _continue_publish(
     buffer_future = None
     
     max_workers = len(cfg.wordpress_sites) + 1
-    
+    wp_sites_to_publish = (
+        [s for s in cfg.wordpress_sites if s.site_url in selected_wp_site_urls]
+        if selected_wp_site_urls is not None
+        else cfg.wordpress_sites
+    )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         if should_wp:
-            for site_cfg in cfg.wordpress_sites:
+            for site_cfg in wp_sites_to_publish:
                 if site_cfg.is_valid:
                     f = executor.submit(
                         _worker_wordpress, WordPressService(site_cfg), article_data, parsed
@@ -632,9 +692,11 @@ def main():
     non_error_states = {
         "PENDING_SELECTION",
         "PENDING_PAGE_SELECTION",
+        "PENDING_WP_SITE_SELECTION",
         "NO_PENDING_SELECTION",
         "INVALID_CHOICE",
         "INVALID_PAGE_CHOICE",
+        "INVALID_WP_SITE_CHOICE", 
         "",
     }
     if result.error and result.error not in non_error_states:

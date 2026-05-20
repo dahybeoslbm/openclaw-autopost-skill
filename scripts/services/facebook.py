@@ -60,7 +60,7 @@ class FacebookService:
         if video_url:
             return self._post_video(page_id, page_token, video_url, text, scheduled_at)
         if image_urls:
-            return self._post_photo(page_id, page_token, image_urls[0], text, scheduled_at)
+            return self._post_multi_photo(page_id, page_token, image_urls, text, scheduled_at)
         return self._post_text(page_id, page_token, text, scheduled_at)
 
     def _post_text(
@@ -74,6 +74,58 @@ class FacebookService:
         resp.raise_for_status()
         return resp.json()
 
+    def _upload_photo_unpublished(
+        self, page_id: str, token: str, image_url: str
+    ) -> str | None:
+        payload = {
+            "url": image_url,
+            "published": "false",
+            "access_token": token,
+        }
+        resp = requests.post(f"{FB_API_BASE}/{page_id}/photos", data=payload, timeout=30)
+        if not resp.ok:
+            logger.warning("  → [Facebook] Upload ảnh thất bại: %s", resp.text[:200])
+            return None
+        return resp.json().get("id")
+
+    def _post_multi_photo(
+        self, page_id: str, token: str, image_urls: list[str],
+        caption: str, scheduled_at: str | None
+    ) -> dict:
+        import concurrent.futures
+        photo_ids = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            futures = [
+                ex.submit(self._upload_photo_unpublished, page_id, token, url)
+                for url in image_urls
+            ]
+            for f in futures:
+                pid = f.result()
+                if pid:
+                    photo_ids.append(pid)
+
+        if not photo_ids:
+            logger.warning("  → [Facebook] Không upload được ảnh nào, fallback ảnh đơn")
+            return self._post_photo(page_id, token, image_urls[0], caption, scheduled_at)
+
+        payload: dict = {
+            "message": caption,
+            "access_token": token,
+        }
+        for i, photo_id in enumerate(photo_ids):
+            payload[f"attached_media[{i}]"] = f'{{"media_fbid":"{photo_id}"}}'
+
+        if scheduled_at:
+            payload["scheduled_publish_time"] = _to_unix(scheduled_at)
+            payload["published"] = "false"
+
+        resp = requests.post(f"{FB_API_BASE}/{page_id}/feed", data=payload, timeout=30)
+        if not resp.ok:
+            logger.error("  → [Facebook] Multi-photo thất bại: HTTP %d | %s",
+                        resp.status_code, resp.text[:500])
+            resp.raise_for_status()
+        return resp.json()
+    
     def _post_photo(
         self, page_id: str, token: str, image_url: str,
         caption: str, scheduled_at: str | None

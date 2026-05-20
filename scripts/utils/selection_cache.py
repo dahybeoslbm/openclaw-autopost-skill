@@ -187,3 +187,57 @@ def delete_pending_pages(chat_id: str) -> None:
     key = _make_page_key(chat_id)
     with _get_conn() as conn:
         conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
+        
+
+@dataclass
+class PendingWPSiteSelection:
+    sites:         list[dict]   # [{"url": site_url}, ...]
+    topic:         str
+    platforms:     list[str]
+    schedule:      str
+    article_id:    str
+    article_title: str
+
+_WP_SITE_KEY_PREFIX = "wp_site_sel:"
+
+def _make_wp_site_key(chat_id: str) -> str:
+    raw = f"{_WP_SITE_KEY_PREFIX}{chat_id}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+def save_pending_wp_sites(chat_id: str, pending: PendingWPSiteSelection) -> None:
+    key = _make_wp_site_key(chat_id)
+    payload = json.dumps({
+        "sites": pending.sites, "topic": pending.topic,
+        "platforms": pending.platforms, "schedule": pending.schedule,
+        "article_id": pending.article_id, "article_title": pending.article_title,
+        "_type": "wp_site_selection",
+    }, ensure_ascii=False)
+    expires_at = int(time.time()) + _TTL_SECONDS
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO selection_cache (cache_key, payload, expires_at) VALUES (?, ?, ?)",
+            (key, payload, expires_at)
+        )
+
+def load_pending_wp_sites(chat_id: str) -> "PendingWPSiteSelection | None":
+    key = _make_wp_site_key(chat_id)
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM selection_cache WHERE cache_key = ? AND expires_at > ?",
+            (key, int(time.time()))
+        ).fetchone()
+    if not row:
+        return None
+    data = json.loads(row[0])
+    if data.get("_type") != "wp_site_selection":
+        return None
+    return PendingWPSiteSelection(
+        sites=data["sites"], topic=data["topic"], platforms=data["platforms"],
+        schedule=data["schedule"], article_id=data["article_id"],
+        article_title=data["article_title"],
+    )
+
+def delete_pending_wp_sites(chat_id: str) -> None:
+    key = _make_wp_site_key(chat_id)
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
