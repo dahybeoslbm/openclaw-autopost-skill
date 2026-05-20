@@ -18,6 +18,7 @@ from typing import Callable
 
 import requests
 
+from utils.models import BufferPostResult
 from utils.logger import get_logger
 from .platforms.facebook       import FacebookPlatform
 from .platforms.instagram      import InstagramPlatform
@@ -293,3 +294,73 @@ class BufferClient:
             },
             "results": results,
         }
+    
+    def post_all_channels(
+        self,
+        social_texts: dict,
+        image_urls: list[str] | None,
+        scheduled_at: str | None,
+        platforms: list[str] | None = None,
+    ) -> list:
+
+        targets = self.get_channels_from_env(platforms)
+        if not targets:
+            logger.warning("  → [Buffer] Không tìm thấy channel nào trong .env")
+            return []
+
+        def _post_one(ch: dict) -> BufferPostResult:
+            service      = (ch.get("service") or "").lower()
+            post_opts    = social_texts.get(service) or {}
+            attr         = _SERVICE_TO_ATTR.get(service)
+            platform_obj = getattr(self, attr, None) if attr else None
+
+            if not platform_obj:
+                logger.warning("  → [Buffer] '%s' chưa hỗ trợ, bỏ qua", service)
+                return BufferPostResult(
+                    platform=service, channel_name=ch.get("name", ""),
+                    channel_id=ch["id"], status="error",
+                    error=f"Platform '{service}' chưa hỗ trợ",
+                )
+
+            api_key_for_ch = self._channel_api_key_map.get(ch["id"]) or self._default_api_key
+            if scheduled_at and bsc.is_full(api_key_for_ch):
+                tail    = api_key_for_ch[-4:]
+                pending = bsc.list_active(api_key_for_ch)
+                lines   = [
+                    f"  {i+1}. [{r['platform'].upper()}] {r['title']}\n"
+                    f"     ⏰ {r['scheduled_at'].replace('T',' ').replace('Z',' UTC')}"
+                    for i, r in enumerate(pending)
+                ]
+                msg = (
+                    f"⚠️ Buffer account ...{tail} đã đạt giới hạn 10 scheduled posts.\n\n"
+                    f"📋 Danh sách bài đang chờ:\n" + "\n".join(lines) +
+                    "\n\nChờ bài cũ được đăng xong rồi thử lại."
+                )
+                logger.warning("  → [Buffer] ❌ BUFFER_SCHEDULE_LIMIT:\n%s", msg)
+                return BufferPostResult(
+                    platform=service, channel_name=ch.get("name", ""),
+                    channel_id=ch["id"], status="error", error=msg,
+                )
+
+            try:
+                post = platform_obj.create_post(
+                    ch["id"],
+                    text         = post_opts.get("text", ""),
+                    image_urls   = image_urls or None,
+                    scheduled_at = scheduled_at,
+                )
+                logger.info("  → [Buffer] ✅ [%s] %s", service.upper(), ch.get("name"))
+                return BufferPostResult(
+                    platform=service, channel_name=ch.get("name", ""),
+                    channel_id=ch["id"], status="success",
+                    post_id=post.get("id", ""),
+                )
+            except Exception as e:
+                logger.warning("  → [Buffer] ❌ [%s] %s — %s", service.upper(), ch.get("name"), e)
+                return BufferPostResult(
+                    platform=service, channel_name=ch.get("name", ""),
+                    channel_id=ch["id"], status="error", error=str(e),
+                )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(targets))) as ex:
+            return list(ex.map(_post_one, targets))
