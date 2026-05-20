@@ -313,12 +313,13 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
             # Tái sử dụng _continue_publish với override selected_page_ids
             parsed = ParsedRequest(
                 topic         = pending_pages.topic,
-                platforms     = [pending_pages.platform],
+                platforms     = pending_pages.platforms, 
                 schedule_time = pending_pages.schedule,
             )
             return _continue_publish(
                 cfg, gemini, drive_article, parsed, webhook_url,
                 selected_page_ids=selected_ids,
+                selected_wp_site_urls = pending_pages.selected_wp_site_urls,
             )
 
         pending_wp = load_pending_wp_sites(cfg.chat_id)
@@ -355,6 +356,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
             return _continue_publish(
                 cfg, gemini, drive_article, parsed, webhook_url,
                 selected_wp_site_urls=selected_urls,
+                selected_page_ids=pending_wp.selected_page_ids,
             )
     # ── LƯỢT 2: User reply số thứ tự ────────────────────────────────────────
     if _is_selection_reply(user_prompt):
@@ -495,10 +497,11 @@ def _continue_publish(
         save_pending_pages(cfg.chat_id, PendingPageSelection(
             pages         = cfg.facebook.pages,
             topic         = parsed.topic,
-            platform      = "facebook",
+            platforms     = parsed.platforms,
             schedule      = parsed.schedule_time,
             article_id    = drive_article.document_id,
             article_title = drive_article.title,
+            selected_wp_site_urls = selected_wp_site_urls,
         ))
         lines = [f"📄 Tìm thấy {len(cfg.facebook.pages)} Facebook Pages. Chọn page muốn đăng:"]
         for i, pg in enumerate(cfg.facebook.pages):
@@ -517,6 +520,7 @@ def _continue_publish(
             schedule      = parsed.schedule_time,
             article_id    = drive_article.document_id,
             article_title = drive_article.title,
+            selected_page_ids = selected_page_ids,
         ))
         lines = [f"🌐 Tìm thấy {len(valid_wp_sites)} WordPress sites. Chọn site muốn đăng:"]
         for i, s in enumerate(valid_wp_sites):
