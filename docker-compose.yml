@@ -1,19 +1,44 @@
 
 services:
+  # ── Daemon mode (khuyến nghị) ────────────────────────────────────────────────
+  # Container chạy nền liên tục. Dùng run.sh để gọi lệnh qua docker exec.
+  # Khởi động lần đầu: docker compose up -d
+  # Sau đó dùng: ./run.sh "đăng bài về Đà Lạt lên Facebook"
   auto-travel-blogger:
     build: .
+    container_name: auto-travel-blogger
+    restart: unless-stopped
     network_mode: host
+    entrypoint: ""
+    command: tail -f /dev/null   # giữ container sống, exec từ ngoài vào
     volumes:
       - ./:/app:rw
       - ~/.openclaw:/root/.openclaw:rw
       - ~/.gemini:/root/.gemini:ro
       - ./output:/app/output
     env_file:
-      - ~/.openclaw/workspace/.env # ← thêm dòng này để load biến môi trường từ OpenClaw CLI
+      - ~/.openclaw/workspace/.env
       - .env
     environment:
       - OUTPUT_DIR=/app/output
-      - OPENCLAW_BIN=/root/.openclaw/tmp/node-compile-cache/openclaw 
-    # The default command will be appended to the ENTRYPOINT in Dockerfile
-    # Example usage: docker-compose run --rm auto-travel-blogger "Viết bài review về Đà Lạt"
+      - OPENCLAW_BIN=/root/.openclaw/tmp/node-compile-cache/openclaw
+
+  # ── One-shot mode (legacy) ───────────────────────────────────────────────────
+  # Dùng khi cần chạy nhanh không cần daemon.
+  # docker compose run --rm auto-travel-blogger-run "câu lệnh"
+  auto-travel-blogger-run:
+    build: .
+    network_mode: host
+    entrypoint: python /app/scripts/blogger.py
+    volumes:
+      - ./:/app:rw
+      - ~/.openclaw:/root/.openclaw:rw
+      - ~/.gemini:/root/.gemini:ro
+      - ./output:/app/output
+    env_file:
+      - ~/.openclaw/workspace/.env
+      - .env
+    environment:
+      - OUTPUT_DIR=/app/output
+      - OPENCLAW_BIN=/root/.openclaw/tmp/node-compile-cache/openclaw
 

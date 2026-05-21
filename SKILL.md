@@ -40,17 +40,35 @@ Pipeline tự động: **Google Drive → Gemini (social captions) → WordPress
 
 ## Cách chạy
 
+> **QUAN TRỌNG — Luôn dùng `run.sh`, KHÔNG dùng `docker compose run`.**
+> `run.sh` dùng `docker exec` vào container đang chạy (~0.3s) thay vì tạo container mới (~5s).
+
 ```bash
 cd /Users/itdev/.openclaw/workspace/skills/auto-travel-blogger
-docker-compose run --rm auto-travel-blogger "<câu yêu cầu tự nhiên>"
+
+# Khởi động daemon lần đầu (chỉ cần làm 1 lần, hoặc sau khi reboot)
+./run.sh --start
+
+# Chạy lệnh (nhanh ~0.3s vì dùng docker exec)
+./run.sh "<câu yêu cầu tự nhiên>"
 ```
 
 **Ví dụ:**
 ```bash
-docker-compose run --rm auto-travel-blogger "Đăng bài về Hội An lên WordPress"
-docker-compose run --rm auto-travel-blogger "Post bài Đà Lạt lên Facebook lúc 8h sáng mai"
-docker-compose run --rm auto-travel-blogger "Đăng bài Phú Quốc lên Instagram ngày mai 9h"
+./run.sh "Đăng bài về Hội An lên WordPress"
+./run.sh "Post bài Đà Lạt lên Facebook lúc 8h sáng mai"
+./run.sh "Đăng bài Phú Quốc lên Instagram ngày mai 9h"
 ```
+
+**Quản lý daemon:**
+```bash
+./run.sh --status    # Kiểm tra container có đang chạy không
+./run.sh --stop      # Dừng daemon
+./run.sh --rebuild   # Build lại image (sau khi sửa code)
+```
+
+> `run.sh` tự động start daemon nếu container chưa chạy, nên không cần lo.
+> Nếu daemon lỗi, tự fallback về `docker compose run` (chậm hơn nhưng vẫn chạy được).
 
 ---
 
@@ -86,12 +104,12 @@ Tìm thấy 3 tài liệu về 'đà lạt':
 Agent cần **hiển thị danh sách này cho user** và chạy lại lệnh với đúng số họ chọn:
 
 ```bash
-docker-compose run --rm auto-travel-blogger "2"
+./run.sh "2"
 ```
 
 Để huỷ:
 ```bash
-docker-compose run --rm auto-travel-blogger "huỷ"
+./run.sh "huỷ"
 ```
 
 ---

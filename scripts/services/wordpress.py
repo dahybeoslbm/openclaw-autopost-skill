@@ -274,12 +274,12 @@ class WordPressService:
         ]
 
         # 4. Xác định status
-        if schedule_time:
+        if save_as_draft:
+            wp_status     = "draft"
+            payload_extra = {"date_gmt": schedule_time} if schedule_time else {}
+        elif schedule_time:
             wp_status     = "future"
             payload_extra = {"date_gmt": schedule_time}
-        elif save_as_draft:
-            wp_status     = "draft"
-            payload_extra = {}
         else:
             wp_status     = "publish"
             payload_extra = {}
