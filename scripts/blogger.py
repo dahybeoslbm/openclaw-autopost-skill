@@ -592,23 +592,35 @@ def _continue_publish(
 
     if need_rewrite or need_captions:
         logger.info(
-            "[4/6] Gemini: rewrite=%d bản | captions=%s (1 request)",
+            "[4/6] Gemini: rewrite=%d bản | captions=%s",
             rewrite_count, gemini_platforms or "all",
         )
         print(
             "  ⏳ Gemini đang xử lý"
             + (f" {rewrite_count} bản rewrite" if need_rewrite else "")
-            + (" + captions" if need_captions else "")
+            + (" captions" if need_captions else "")
             + "..."
         )
-        rewritten_versions, social_captions = gemini.rewrite_and_caption_batch(
-            original_html  = drive_article.content,
-            topic          = parsed.topic,
-            title          = drive_article.title,
-            rewrite_count  = rewrite_count,
-            platforms      = gemini_platforms if need_captions else None,
-            facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
-        )
+        if need_rewrite:
+            # Gộp rewrite + caption trong 1 request (giữ nguyên flow cũ)
+            rewritten_versions, social_captions = gemini.rewrite_and_caption_batch(
+                original_html  = drive_article.content,
+                topic          = parsed.topic,
+                title          = drive_article.title,
+                rewrite_count  = rewrite_count,
+                platforms      = gemini_platforms if need_captions else None,
+                facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
+            )
+        elif need_captions:
+            # Chỉ caption (Facebook/Buffer/...) — dùng standalone prompt
+            # tránh conflict JSON schema trong rewrite_and_caption_batch
+            social_captions = gemini.generate_social_captions(
+                topic          = parsed.topic,
+                title          = drive_article.title,
+                plain_text     = plain,
+                platforms      = gemini_platforms,
+                facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
+            )
         print("  ✅ Xong")
         logger.info("  → %d bản rewrite | %d platforms caption",
                     len(rewritten_versions), len(social_captions))
