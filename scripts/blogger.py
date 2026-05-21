@@ -36,8 +36,6 @@ from utils.selection_cache import (
     load_pending_pages, delete_pending_pages,
     PendingWPSiteSelection, save_pending_wp_sites,
     load_pending_wp_sites, delete_pending_wp_sites,
-    PendingWPRewriteMode, save_pending_wp_rewrite_mode,
-    load_pending_wp_rewrite_mode, delete_pending_wp_rewrite_mode,
 )
 from utils import buffer_schedule_cache as bsc
 
@@ -74,7 +72,6 @@ _NON_ERROR_STATES = {
     "PENDING_SELECTION",
     "PENDING_PAGE_SELECTION",
     "PENDING_WP_SITE_SELECTION",
-    "PENDING_WP_REWRITE_MODE",
     "NO_PENDING_SELECTION",
     "INVALID_CHOICE",
     "INVALID_PAGE_CHOICE",
@@ -138,11 +135,6 @@ def _is_page_selection(prompt: str) -> bool:
     if p in _ALL_PAGES_KEYWORDS:
         return True
     return bool(p) and all(x.isdigit() for x in p.split())
-
-
-def _is_rewrite_mode_reply(prompt: str) -> bool:
-    """Nhận diện user chọn rewrite mode: chỉ chấp nhận '1' hoặc '2'."""
-    return prompt.strip() in {"1", "2"}
 
 # ── Publish workers ──────────────────────────────────────────────────────────
 
@@ -249,39 +241,6 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         print("❌ Đã huỷ yêu cầu chọn bài.")
         return PublishResult(file_path="")
 
-    # ── LƯỢT 2c: User reply chọn rewrite mode ────────────────────────────────
-    # Phải check TRƯỚC _is_page_selection vì "1" / "2" cũng match page selection
-    if _is_rewrite_mode_reply(user_prompt):
-        pending_rewrite = load_pending_wp_rewrite_mode(cfg.chat_id)
-        if pending_rewrite:
-            rewrite_mode = (user_prompt.strip() == "1")
-            delete_pending_wp_rewrite_mode(cfg.chat_id)
-            print(
-                "✅ Sẽ viết lại nội dung riêng cho từng site."
-                if rewrite_mode else
-                "⚠️  Dùng cùng nội dung gốc cho tất cả sites."
-            )
-
-            result = _load_drive_article(
-                drive_service, pending_rewrite.article_id,
-                cfg.googledrive.language, pending_rewrite.article_data,
-            )
-            if isinstance(result, PublishResult):
-                return result
-            drive_article = result
-
-            parsed = ParsedRequest(
-                topic         = pending_rewrite.topic,
-                platforms     = pending_rewrite.platforms,
-                schedule_time = pending_rewrite.schedule,
-            )
-            return _continue_publish(
-                cfg, gemini, drive_article, parsed, webhook_url,
-                selected_page_ids     = pending_rewrite.selected_page_ids,
-                selected_wp_site_urls = pending_rewrite.selected_wp_site_urls,
-                rewrite_mode          = rewrite_mode,
-            )
-
     # ── LƯỢT 2b: User reply chọn page / WP site ──────────────────────────────
     if _is_page_selection(user_prompt):
 
@@ -355,8 +314,6 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
                 platforms     = pending_wp.platforms,
                 schedule_time = pending_wp.schedule,
             )
-            # rewrite_mode=None → _continue_publish sẽ hỏi rewrite
-            # (áp dụng cho cả "tất cả" lẫn nhập số — 2+ sites đều cần rewrite)
             return _continue_publish(
                 cfg, gemini, result, parsed, webhook_url,
                 selected_wp_site_urls = selected_urls,
@@ -456,7 +413,6 @@ def _continue_publish(
     webhook_url: str | None,
     selected_page_ids: list[str] | None = None,
     selected_wp_site_urls: list[str] | None = None,
-    rewrite_mode: bool | None = None,   # None=chưa hỏi, True/False=đã chọn
 ) -> PublishResult:
     """
     Bước 3→6: xử lý nội dung, lưu file, đăng bài song song.
@@ -466,28 +422,24 @@ def _continue_publish(
       "wordpress"       → chỉ WP
       Tên platform cụ thể → chỉ platform đó
 
-    WordPress luôn lưu draft (save_as_draft=True) để con người kiểm duyệt
-    trước khi publish. Rewrite chỉ được hỏi khi user chọn sites bằng số
-    cụ thể (ví dụ "1 2"), còn "tất cả" thì dùng nội dung gốc.
+    WordPress luôn lưu draft để con người kiểm duyệt trước khi publish.
+    Khi đăng nhiều WP sites, Gemini tự động viết lại từng bản để tránh
+    duplicate content (không cần hỏi người dùng).
     """
     platforms     = [p.lower() for p in parsed.platforms]
     publish_all   = platforms == ["blog"]
     should_wp     = publish_all or "wordpress" in platforms
     should_facebook  = cfg.facebook.is_valid and (publish_all or "facebook" in platforms)
 
-    # buffer_platforms: đọc từ env thay vì hardcode hay để trống
-    # publish_all=True  → lấy tất cả platform có channel trong .env
-    # publish_all=False → chỉ lấy platform user yêu cầu
     if publish_all:
         buffer_platforms = [
             p for p in BufferClient.get_configured_platforms()
-            if p != "facebook"   # Facebook xử lý riêng qua FACEBOOK_PAGES
+            if p != "facebook"
         ]
     else:
         buffer_platforms = [p for p in platforms if p in _BUFFER_PLATFORMS]
 
     should_buffer = cfg.buffer.is_valid and bool(buffer_platforms)
-
 
     # ── Bước 3: Thu thập Drive image URLs (cho Buffer/Facebook) ──────────────
     logger.info("[3/6] Lấy ảnh từ Google Docs (%d ảnh)", drive_article.image_count())
@@ -536,39 +488,10 @@ def _continue_publish(
         lines = [f"🌐 Tìm thấy {len(valid_wp_sites)} WordPress sites. Chọn site muốn đăng:"]
         for i, s in enumerate(valid_wp_sites):
             lines.append(f"  {i+1}. {s.site_url}")
-        lines.append("→ Nhập số thứ tự (vd: '1 2') hoặc 'tất cả'. Bước sau sẽ hỏi rewrite.")
+        lines.append("→ Nhập số thứ tự (vd: '1 2') hoặc 'tất cả'.")
         lines.append("  (Gõ 'huỷ' để bỏ qua)")
         print("\n".join(lines))
         return PublishResult(file_path="", error="PENDING_WP_SITE_SELECTION")
-
-    # ── Guard: hỏi rewrite mode (chỉ khi chọn sites bằng số cụ thể) ─────────
-    # rewrite_mode=None  → user chọn bằng số → hỏi
-    # rewrite_mode=False → user gõ "tất cả"  → bỏ qua, dùng nội dung gốc
-    # rewrite_mode=True  → đã xác nhận rewrite
-    if (
-        should_wp
-        and selected_wp_site_urls is not None
-        and len(selected_wp_site_urls) > 1
-        and rewrite_mode is None
-    ):
-        save_pending_wp_rewrite_mode(cfg.chat_id, PendingWPRewriteMode(
-            selected_wp_site_urls = selected_wp_site_urls,
-            topic                 = parsed.topic,
-            platforms             = parsed.platforms,
-            schedule              = parsed.schedule_time,
-            article_id            = drive_article.document_id,
-            article_title         = drive_article.title,
-            article_data          = drive_article.to_dict(),
-            selected_page_ids     = selected_page_ids,
-        ))
-        print(
-            "⚠️  Đăng cùng nội dung lên nhiều site sẽ bị Google đánh spam.\n\n"
-            "📝 Chọn cách xử lý nội dung:\n"
-            "  1. Viết lại riêng cho từng site (khuyến nghị ✅)\n"
-            "  2. Dùng cùng nội dung gốc cho tất cả (không khuyến nghị ⚠️)\n"
-            "  (Gõ 'huỷ' để bỏ qua)"
-        )
-        return PublishResult(file_path="", error="PENDING_WP_REWRITE_MODE")
 
     # ── Xác định sites thực tế sẽ publish ────────────────────────────────────
     wp_sites_to_publish = (
@@ -578,13 +501,12 @@ def _continue_publish(
     )
     wp_sites_to_publish = [s for s in wp_sites_to_publish if s.is_valid]
 
-    # ── WordPress luôn lưu draft để kiểm duyệt trước khi publish ─────────────
+    # WordPress luôn lưu draft để kiểm duyệt trước khi publish
     save_as_draft = True
 
-    # Số bản cần viết lại (site đầu giữ bản gốc, site 2+ nhận bản rewrite)
-    # rewrite_mode=True  → rewrite
-    # rewrite_mode=False hoặc None (1 site) → không rewrite
-    rewrite_count = (len(wp_sites_to_publish) - 1) if rewrite_mode else 0
+    # Khi đăng nhiều sites → tự động rewrite để tránh duplicate content
+    # Site đầu tiên dùng bản gốc, các site sau nhận bản rewrite riêng
+    rewrite_count = max(0, len(wp_sites_to_publish) - 1)
 
     # ── Bước 4: Gemini — rewrite + captions trong 1 request ──────────────────
     plain = drive_article.plain_text()
@@ -597,9 +519,6 @@ def _continue_publish(
             else cfg.facebook.pages
         )
 
-    # Platforms cần gen caption
-    # gemini_platforms: tập hợp platform thực sự sẽ đăng
-    # → Gemini chỉ gen caption cho đúng những platform này, không gen thừa
     _active_for_gemini = list(buffer_platforms)
     if should_facebook:
         _active_for_gemini.append("facebook")
