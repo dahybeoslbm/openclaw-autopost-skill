@@ -13,7 +13,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
- 
+
 class WordPressService:
     def __init__(self, config: WordPressConfig):
         self._config = config
@@ -30,9 +30,9 @@ class WordPressService:
         })
         return session
 
-    # ── Media ───────────────────────────────────────────────
+    # ── Media ────────────────────────────────────────────────────────────────
 
-    def upload_image(self, image_path: str) -> tuple[int, str]  | None:
+    def upload_image(self, image_path: str) -> tuple[int, str] | None:
         """
         Upload ảnh lên WP Media Library.
         - Nếu là file local → đọc trực tiếp
@@ -52,7 +52,6 @@ class WordPressService:
             with open(image_path, "rb") as f:
                 img_data = f.read()
 
-            # Tạo header riêng cho multipart (không dùng Content-Type: json)
             headers = {
                 k: v for k, v in self._session.headers.items()
                 if k != "Content-Type"
@@ -67,7 +66,7 @@ class WordPressService:
             )
 
             if resp.status_code == 201:
-                media_id = resp.json()["id"]
+                media_id  = resp.json()["id"]
                 media_url = resp.json()["source_url"]
                 logger.info("  → Upload OK, media ID: %d", media_id)
                 return media_id, media_url
@@ -101,7 +100,6 @@ class WordPressService:
 
             result = self.upload_image(tmp_path)
 
-            # Dọn file tạm
             try:
                 os.unlink(tmp_path)
             except OSError:
@@ -112,7 +110,8 @@ class WordPressService:
         except Exception as e:
             logger.error("  → upload_image_from_url error: %s", e)
             return None
-    # ── Taxonomy ────────────────────────────────────────────
+
+    # ── Taxonomy ─────────────────────────────────────────────────────────────
 
     def get_or_create_category(self, name: str) -> int | None:
         """Tìm category theo tên, tạo mới nếu chưa có. Trả về ID."""
@@ -126,7 +125,6 @@ class WordPressService:
             if results:
                 return results[0]["id"]
 
-            # Chưa có → tạo mới
             resp = self._session.post(
                 url=f"{self._config.api_base}/categories",
                 json={"name": name},
@@ -165,18 +163,14 @@ class WordPressService:
 
         return None
 
-    # ── Duplicate check ─────────────────────────────────────
+    # ── Duplicate check ───────────────────────────────────────────────────────
 
     def post_exists(self, title: str) -> bool:
         """Kiểm tra bài viết có tiêu đề này đã tồn tại chưa."""
         try:
             resp = self._session.get(
                 url=f"{self._config.api_base}/posts",
-                params={
-                    "search": title,
-                    "status": "any",
-                    "_fields": "id,title",
-                },
+                params={"search": title, "status": "any", "_fields": "id,title"},
                 timeout=self._config.timeout,
             )
             for post in resp.json():
@@ -187,18 +181,25 @@ class WordPressService:
             logger.error("  → post_exists error: %s", e)
         return False
 
-    # ── Publish ─────────────────────────────────────────────
+    # ── Publish ───────────────────────────────────────────────────────────────
 
     def publish(
         self,
         article_data: dict,
         image_files: list[str],
         schedule_time: str = "",
+        save_as_draft: bool = False,
         category_names: list[str] | None = None,
         tag_names: list[str] | None = None,
     ) -> dict | None:
         """
         Đăng bài lên WordPress.
+
+        Thứ tự ưu tiên status:
+          schedule_time → "future"  (hẹn giờ)
+          save_as_draft → "draft"   (nháp để human review + thay ảnh)
+          default       → "publish"
+
         Trả về response dict nếu thành công, None nếu thất bại.
         """
         if not self._config.is_valid:
@@ -208,10 +209,10 @@ class WordPressService:
         logger.info("  → Chuẩn bị đăng lên WordPress...")
 
         title   = article_data.get("seo_title", "")
-        excerpt = article_data.get("excerpt",   "")
-        content = article_data.get("content",   "")
-        
-        # 1. HTML
+        excerpt = article_data.get("excerpt", "")
+        content = article_data.get("content", "")
+
+        # 1. HTML content
         html_content = article_data.get("content_html", "")
 
         # 2. Upload ảnh → lấy featured image ID
@@ -231,17 +232,16 @@ class WordPressService:
                     featured_media_id = media_id
 
         # 2b. Upload ảnh nhúng trong HTML (từ Google Docs API — URL ngoài)
-        #     Tìm tất cả <img src="..."> không phải của WP rồi upload lên Media
         import re
         import concurrent.futures
-        
+
         img_urls = list(dict.fromkeys(
             url for url in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_content)
             if not url.startswith(wp_base)
             and not url.startswith("data:")
             and url.startswith("http")
         ))
-        
+
         if img_urls:
             logger.info("  → Upload %d ảnh song song...", len(img_urls))
 
@@ -275,19 +275,22 @@ class WordPressService:
 
         # 4. Xác định status
         if schedule_time:
-            wp_status = "future"
+            wp_status     = "future"
             payload_extra = {"date_gmt": schedule_time}
+        elif save_as_draft:
+            wp_status     = "draft"
+            payload_extra = {}
         else:
-            wp_status = "publish"
+            wp_status     = "publish"
             payload_extra = {}
 
         # 5. Build payload
         payload: dict = {
-            "title"     : title,
-            "content"   : html_content,
-            "status"    : wp_status,
+            "title":      title,
+            "content":    html_content,
+            "status":     wp_status,
             "categories": category_ids,
-            "tags"      : tag_ids,
+            "tags":       tag_ids,
             **payload_extra,
         }
         if featured_media_id:
@@ -303,7 +306,8 @@ class WordPressService:
 
             if resp.status_code == 201:
                 data = resp.json()
-                logger.info("  → ✅ Đăng WP thành công! ID=%d | %s", data["id"], data["link"])
+                logger.info("  → ✅ Đăng WP thành công! ID=%d | status=%s | %s",
+                            data["id"], data["status"], data.get("link", ""))
                 return data
 
             logger.error(

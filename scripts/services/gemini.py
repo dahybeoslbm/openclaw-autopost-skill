@@ -1,11 +1,13 @@
 """
 services/gemini.py — Tất cả tương tác với Gemini API.
 """
+import json
+import re as _re
 import random
 from time import sleep
 
 import requests
-import json
+
 from config import GeminiConfig, OllamaConfig
 from utils.logger import get_logger
 
@@ -13,35 +15,39 @@ logger = get_logger(__name__)
 
 # Các status code nên chuyển sang Ollama thay vì retry tiếp
 _OLLAMA_FALLBACK_STATUSES = {429, 503, 0}
+
+
 class GeminiService:
     def __init__(self, config: GeminiConfig, ollama_config: OllamaConfig | None = None):
         self._config = config
         self._ollama = ollama_config
-        
- # ── Ollama fallback ──────────────────────────────────────────────────────
+
+    # ── Ollama fallback ───────────────────────────────────────────────────────
+
     def _generate_via_ollama(self, prompt: str) -> str:
         """Gọi Ollama Cloud API, raise nếu thất bại."""
         if not self._ollama or not self._ollama.is_valid:
             raise RuntimeError("Ollama chưa được cấu hình.")
 
-        system_msg = (
-            "You are a JSON generator. "
-            "Return ONLY valid JSON with no markdown fences, "
-            "no explanations, no extra text. "
-            "All HTML must be inside JSON string values with properly escaped quotes."
-        )
-
         payload = {
             "model": self._ollama.model,
             "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt}
-                ],
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a JSON generator. "
+                        "Return ONLY valid JSON with no markdown fences, "
+                        "no explanations, no extra text. "
+                        "All HTML must be inside JSON string values with properly escaped quotes."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
             "stream": False,
             "options": {
                 "temperature": 0.85,
                 "top_p": 0.9,
-                "seed": random.randint(1, 99999),  # ← mỗi lần chạy ra caption khác nhau
+                "seed": random.randint(1, 99999),
             },
         }
         resp = requests.post(
@@ -55,20 +61,19 @@ class GeminiService:
         )
         resp.raise_for_status()
         return resp.json()["message"]["content"]
-    
-    
+
+    # ── Core generate ─────────────────────────────────────────────────────────
+
     def generate(self, prompt: str, max_retries: int = 3) -> str:
         if not self._config.is_valid:
             logger.warning("  → GEMINI_API_KEY chưa được cài đặt.")
-            return _FALLBACK_ARTICLE
+            return ""
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
-                "thinkingConfig": {
-                    "thinkingBudget": 0   # ← tắt thinking hoàn toàn
-                }
-            }
+                "thinkingConfig": {"thinkingBudget": 0}
+            },
         }
 
         for attempt in range(1, max_retries + 1):
@@ -84,15 +89,13 @@ class GeminiService:
 
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response else 0
-
                 if status in _OLLAMA_FALLBACK_STATUSES:
                     logger.warning("  → Gemini %d, chuyển sang Ollama fallback...", status)
-                    break  # ← thoát loop, xuống xử lý Ollama bên dưới
-
+                    break
                 if attempt < max_retries:
                     wait = 2 ** attempt
                     logger.warning("  → Gemini HTTP %d, thử lại %d/%d sau %ds...",
-                                status, attempt, max_retries, wait)
+                                   status, attempt, max_retries, wait)
                     sleep(wait)
                 else:
                     logger.error("  → Gemini HTTP error: %s", e)
@@ -113,7 +116,7 @@ class GeminiService:
                 logger.error("  → Gemini unknown error: %s", e)
                 break
 
-        # ── Ollama fallback — luôn thử sau khi Gemini thất bại ──────────────
+        # Ollama fallback
         logger.warning("  → Thử Ollama fallback...")
         try:
             return self._generate_via_ollama(prompt)
@@ -122,9 +125,39 @@ class GeminiService:
 
         return "Lỗi tạo nội dung."
 
+    # ── JSON parse helper ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_json(raw: str) -> dict:
+        """
+        Parse JSON từ Gemini output — xử lý markdown fences và garbage prefix.
+        Raise ValueError nếu không parse được.
+        """
+        cleaned = raw.strip()
+
+        # Strip ```json ... ``` fences
+        if "```" in cleaned:
+            for part in cleaned.split("```"):
+                part = part.lstrip("json").strip()
+                if part.startswith("{"):
+                    cleaned = part
+                    break
+
+        # Tìm JSON object đầu tiên
+        start = cleaned.find("{")
+        end   = cleaned.rfind("}") + 1
+        if start != -1 and end > start:
+            cleaned = cleaned[start:end]
+
+        return json.loads(cleaned)
+
+    # ── Normalize facebook captions ───────────────────────────────────────────
+
     def _normalize_result(self, result: dict, facebook_pages: list[dict] | None) -> dict:
+        """Đảm bảo facebook value là list có đủ phần tử nếu có nhiều pages."""
         if not facebook_pages or len(facebook_pages) <= 1 or "facebook" not in result:
             return result
+
         fb = result["facebook"]
         if isinstance(fb, str):
             result["facebook"] = [fb] * len(facebook_pages)
@@ -134,17 +167,26 @@ class GeminiService:
             result["facebook"] = fb[:len(facebook_pages)]
         return result
 
-    def build_social_captions_prompt(self, topic: str, title: str, plain_text: str, platforms: list[str] | None = None, facebook_pages: list[dict] | None = None) -> str:
-        """Prompt nhẹ — CHỈ sinh social_captions từ plain text. Không format HTML."""
+    # ── Social captions prompt builder ───────────────────────────────────────
+
+    def build_social_captions_prompt(
+        self,
+        topic: str,
+        title: str,
+        plain_text: str,
+        platforms: list[str] | None = None,
+        facebook_pages: list[dict] | None = None,
+    ) -> str:
+        """Prompt CHỈ sinh social_captions từ plain text. Không format HTML."""
         excerpt = plain_text[:8000]
-        
+
         all_specs = {
             "facebook": (
                 f"JSON array gồm ĐÚNG {len(facebook_pages)} string, "
                 f"mỗi string là 1 caption 40-80 ký tự + 2-3 emoji + 2 hashtag, góc độ khác nhau.\n"
                 f"VÍ DỤ nếu có 2 pages: [\"caption A 🌟 #tag1\", \"caption B ✈️ #tag2\"]\n"
-                f"Pages:\n" +
-                "\n".join(f"  {i+1}. {p.get('name','')}" for i, p in enumerate(facebook_pages))
+                f"Pages:\n"
+                + "\n".join(f"  {i+1}. {p.get('name','')}" for i, p in enumerate(facebook_pages))
                 if facebook_pages and len(facebook_pages) > 1
                 else "40-80 ký tự. Câu hấp dẫn, 2-3 emoji, 2 hashtag."
             ),
@@ -156,16 +198,14 @@ class GeminiService:
             "pinterest":       "150-250 ký tự inspirational, bắt đầu bằng động từ. Không hashtag.",
             "bluesky":         "200-270 ký tự. Direct, witty, không hashtag.",
             "mastodon":        "300-400 ký tự. 3-4 hashtag du lịch.",
-            "google_business": "300-500 ký tự giới thiệu địa điểm. CTA rõ ràng."
+            "google_business": "300-500 ký tự giới thiệu địa điểm. CTA rõ ràng.",
         }
-        
-         # Lọc chỉ platform cần thiết; None/[] = gen tất cả (trường hợp "blog" / publish all)
+
         if platforms:
             target = {k: v for k, v in all_specs.items() if k in platforms}
         else:
             target = all_specs
 
-        # Fallback phòng trường hợp platforms truyền vào không khớp key nào
         if not target:
             target = all_specs
 
@@ -189,7 +229,16 @@ Trả về JSON hợp lệ, không thêm text hay markdown ngoài JSON.
 Chỉ trả về các key sau, không thêm key khác:
 {specs_json}""".strip()
 
-    def generate_social_captions(self, topic: str, title: str, plain_text: str, platforms: list[str] | None = None, facebook_pages: list[dict] | None = None) -> dict:
+    # ── Social captions (single request) ─────────────────────────────────────
+
+    def generate_social_captions(
+        self,
+        topic: str,
+        title: str,
+        plain_text: str,
+        platforms: list[str] | None = None,
+        facebook_pages: list[dict] | None = None,
+    ) -> dict:
         """Sinh social_captions từ plain text. Trả về dict (rỗng nếu thất bại)."""
         prompt = self.build_social_captions_prompt(topic, title, plain_text, platforms, facebook_pages)
         raw = self.generate(prompt)
@@ -197,31 +246,130 @@ Chỉ trả về các key sau, không thêm key khác:
             return {}
 
         try:
-            cleaned = raw.strip()
-            if "```" in cleaned:
-                for part in cleaned.split("```"):
-                    part = part.lstrip("json").strip()
-                    if not part:
-                        continue
-                    try:
-                        return self._normalize_result(json.loads(part), facebook_pages)
-                    except json.JSONDecodeError:
-                        continue
-
-            try:
-                return self._normalize_result(json.loads(cleaned), facebook_pages)
-            except json.JSONDecodeError:
-                pass
-
-            start = cleaned.find("{")
-            end   = cleaned.rfind("}") + 1
-            if start != -1 and end > start:
-                try:
-                    return self._normalize_result(json.loads(cleaned[start:end]), facebook_pages)
-                except json.JSONDecodeError:
-                    pass
-
+            return self._normalize_result(self._parse_json(raw), facebook_pages)
         except Exception as e:
             logger.warning("  → parse social_captions thất bại: %s", e)
+            return {}
 
-        return {}
+    # ── Batch: rewrite N bản + captions trong 1 request ──────────────────────
+
+    def rewrite_and_caption_batch(
+        self,
+        original_html: str,
+        topic: str,
+        title: str,
+        rewrite_count: int,
+        platforms: list[str] | None = None,
+        facebook_pages: list[dict] | None = None,
+    ) -> tuple[list[tuple[str, str]], dict]:
+        """
+        Gộp rewrite N bản unique + social captions vào 1 Gemini request.
+
+        Args:
+            original_html:  HTML gốc từ Google Drive
+            topic:          Chủ đề bài viết
+            title:          Tiêu đề gốc
+            rewrite_count:  Số bản cần viết lại (0 = chỉ gen captions)
+            platforms:      Danh sách platform cần gen caption (None = bỏ qua captions)
+            facebook_pages: Danh sách FB pages để gen caption riêng từng page
+
+        Returns:
+            rewrites: [(html, title), ...] — rewrite_count phần tử (rỗng nếu rewrite_count=0)
+            captions: dict social captions
+        """
+        plain = _re.sub(r"<[^>]+>", " ", original_html).strip()
+
+        fallback_rewrites = [(original_html, title)] * rewrite_count
+        fallback_captions: dict = {}
+
+        # ── Build phần rewrite ────────────────────────────────────────────────
+        rewrite_section = ""
+        if rewrite_count > 0:
+            rewrite_section = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NHIỆM VỤ 1 — VIẾT LẠI {rewrite_count} BẢN UNIQUE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NỘI DUNG GỐC:
+{plain[:4000]}
+
+Yêu cầu mỗi bản:
+- Giữ nguyên cấu trúc thẻ HTML h1/h2/p/ul, copy y hệt thẻ <img>
+- Viết lại ít nhất 70% từ ngữ, KHÔNG copy nguyên câu từ bản gốc
+- Giữ nguyên thông tin thực tế, tên địa điểm, số liệu
+- Mỗi bản có góc nhìn và cách mở đầu khác nhau
+- Mỗi bản có tiêu đề <h1> mới khác bản gốc và khác nhau giữa các bản
+"""
+
+        # ── Build phần caption ────────────────────────────────────────────────
+        caption_section = ""
+        if platforms:
+            caption_prompt = self.build_social_captions_prompt(
+                topic=topic,
+                title=title,
+                plain_text=plain,
+                platforms=platforms,
+                facebook_pages=facebook_pages,
+            )
+            caption_section = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NHIỆM VỤ 2 — SOCIAL CAPTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{caption_prompt}
+"""
+
+        # ── Build JSON schema ─────────────────────────────────────────────────
+        rewrites_schema = ""
+        if rewrite_count > 0:
+            rewrites_schema = """
+  "rewrites": [
+    {"title": "Tiêu đề bản 1", "html": "<h1>...</h1><p>...</p>"},
+    {"title": "Tiêu đề bản 2", "html": "<h1>...</h1><p>...</p>"}
+  ],"""
+
+        captions_schema = ""
+        if platforms:
+            captions_schema = """
+  "captions": {
+    "facebook": "...",
+    "instagram": "..."
+  }"""
+
+        prompt = f"""
+Bạn là chuyên gia SEO content. CHỦ ĐỀ: {topic} | TIÊU ĐỀ GỐC: {title}
+{rewrite_section}
+{caption_section}
+Trả về JSON hợp lệ duy nhất, không markdown, không giải thích:
+{{{rewrites_schema}{captions_schema}
+}}
+""".strip()
+
+        raw = self.generate(prompt, max_retries=2)
+
+        try:
+            data = self._parse_json(raw)
+
+            # Parse rewrites
+            rewrites: list[tuple[str, str]] = []
+            if rewrite_count > 0:
+                for v in data.get("rewrites", [])[:rewrite_count]:
+                    rewrites.append((
+                        v.get("html", original_html),
+                        v.get("title", title),
+                    ))
+                # Pad với bản gốc nếu Gemini trả thiếu
+                while len(rewrites) < rewrite_count:
+                    logger.warning("  → Gemini trả thiếu bản rewrite, dùng bản gốc")
+                    rewrites.append((original_html, title))
+
+            # Parse captions
+            captions: dict = {}
+            if platforms:
+                captions = self._normalize_result(
+                    data.get("captions", {}), facebook_pages
+                )
+
+            return rewrites, captions
+
+        except Exception as e:
+            logger.warning("  → Parse rewrite+caption batch thất bại: %s — dùng fallback", e)
+            return fallback_rewrites, fallback_captions

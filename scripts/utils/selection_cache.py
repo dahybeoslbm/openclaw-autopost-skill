@@ -1,8 +1,8 @@
 """
 utils/selection_cache.py — Lưu trữ danh sách candidates chờ user chọn.
 
-Key   : SHA256(chat_id + ":" + topic)
-Value : { candidates, platform, schedule, topic }
+Key   : SHA256(prefix + chat_id [+ topic])
+Value : JSON payload với _type để phân biệt loại pending
 TTL   : 24 giờ
 
 SQLite lưu tại OUTPUT_DIR/selection_cache.db
@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 _TTL_SECONDS = 24 * 60 * 60  # 24 giờ
 
+
+# ── DB helpers ───────────────────────────────────────────────────────────────
 
 def _db_path() -> str:
     base = os.environ.get("OUTPUT_DIR", "/app/output")
@@ -37,10 +39,38 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
-def _make_key(chat_id: str, topic: str) -> str:
-    raw = f"{chat_id}:{topic.strip().lower()}"
+def _make_key(prefix: str, *parts: str) -> str:
+    """Tạo cache key từ prefix + các phần, hash SHA256."""
+    raw = prefix + ":".join(parts)
     return hashlib.sha256(raw.encode()).hexdigest()
 
+
+def _save(key: str, payload: dict) -> None:
+    """Lưu payload vào cache với TTL chuẩn."""
+    expires_at = int(time.time()) + _TTL_SECONDS
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO selection_cache (cache_key, payload, expires_at) VALUES (?, ?, ?)",
+            (key, json.dumps(payload, ensure_ascii=False), expires_at),
+        )
+
+
+def _load(key: str) -> dict | None:
+    """Load payload còn hạn, trả về None nếu không tìm thấy."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM selection_cache WHERE cache_key = ? AND expires_at > ?",
+            (key, int(time.time())),
+        ).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def _delete(key: str) -> None:
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
+
+
+# ── Article selection ────────────────────────────────────────────────────────
 
 @dataclass
 class PendingSelection:
@@ -51,95 +81,75 @@ class PendingSelection:
 
 
 def save_pending(chat_id: str, topic: str, pending: PendingSelection) -> None:
-    """Lưu candidates vào cache, TTL 24h."""
-    key     = _make_key(chat_id, topic)
-    payload = json.dumps({
+    key = _make_key(chat_id + ":", topic.strip().lower())
+    _save(key, {
         "candidates": pending.candidates,
         "platform":   pending.platform,
         "schedule":   pending.schedule,
         "topic":      pending.topic,
-    }, ensure_ascii=False)
-    expires_at = int(time.time()) + _TTL_SECONDS
-
-    with _get_conn() as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO selection_cache (cache_key, payload, expires_at)
-            VALUES (?, ?, ?)
-        """, (key, payload, expires_at))
+    })
 
 
 def load_any_pending(chat_id: str) -> PendingSelection | None:
-    """
-    Tìm bất kỳ pending selection còn hạn nào.
-    Trả về cái được tạo gần nhất (expires_at lớn nhất).
-    Dùng khi user gõ "1" mà không rõ topic.
-    """
+    """Tìm bất kỳ pending selection còn hạn, ưu tiên cái mới nhất."""
     now = int(time.time())
     with _get_conn() as conn:
         rows = conn.execute(
-            "SELECT payload, expires_at FROM selection_cache WHERE expires_at > ? ORDER BY expires_at DESC LIMIT 1",
-            (now,)
+            "SELECT payload FROM selection_cache WHERE expires_at > ? ORDER BY expires_at DESC LIMIT 1",
+            (now,),
         ).fetchall()
-
     if not rows:
         return None
-
     data = json.loads(rows[0][0])
+    # Chỉ trả về nếu đây là article selection (không có _type)
+    if "_type" in data:
+        return None
     return PendingSelection(
-        candidates = data["candidates"],
-        platform   = data["platform"],
-        schedule   = data["schedule"],
-        topic      = data["topic"],
+        candidates=data["candidates"],
+        platform=data["platform"],
+        schedule=data["schedule"],
+        topic=data["topic"],
     )
 
 
 def delete_pending(chat_id: str, topic: str) -> None:
-    """Xoá cache sau khi user đã chọn xong."""
-    key = _make_key(chat_id, topic)
-    with _get_conn() as conn:
-        conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
+    _delete(_make_key(chat_id + ":", topic.strip().lower()))
 
 
 def delete_all_pending() -> None:
-    """Xoá toàn bộ cache — dùng khi user gõ 'huỷ'."""
     with _get_conn() as conn:
         conn.execute("DELETE FROM selection_cache")
 
 
 def purge_expired() -> int:
-    """Dọn bản ghi hết hạn. Gọi mỗi lần startup."""
     with _get_conn() as conn:
         cursor = conn.execute(
             "DELETE FROM selection_cache WHERE expires_at <= ?",
-            (int(time.time()),)
+            (int(time.time()),),
         )
         return cursor.rowcount
-    
+
+
+# ── Facebook page selection ──────────────────────────────────────────────────
 
 @dataclass
 class PendingPageSelection:
-    pages:         list[dict]   # list pages từ FACEBOOK_PAGES env
+    pages:         list[dict]
     topic:         str
     platforms:     list[str]
-    schedule:      str          # ISO 8601 hoặc ""
-    article_id:    str          # document_id đã fetch
+    schedule:      str
+    article_id:    str
     article_title: str
-    article_data:  dict | None = None 
+    article_data:  dict | None = None
     selected_wp_site_urls: list[str] | None = None
-    
-# Key prefix riêng để tránh xung đột với selection_cache của bài viết
-_PAGE_KEY_PREFIX = "page_sel:"
 
-def _make_page_key(chat_id: str) -> str:
-    """Một chat_id chỉ có 1 pending page selection tại một thời điểm."""
-    raw = f"{_PAGE_KEY_PREFIX}{chat_id}"
-    return hashlib.sha256(raw.encode()).hexdigest()
+
+_PAGE_KEY_PREFIX = "page_sel:"
 
 
 def save_pending_pages(chat_id: str, pending: PendingPageSelection) -> None:
-    """Lưu page selection vào cache, TTL 24h (dùng chung bảng selection_cache)."""
-    key     = _make_page_key(chat_id)
-    payload = json.dumps({
+    key = _make_key(_PAGE_KEY_PREFIX, chat_id)
+    _save(key, {
         "pages":         pending.pages,
         "topic":         pending.topic,
         "platforms":     pending.platforms,
@@ -148,52 +158,31 @@ def save_pending_pages(chat_id: str, pending: PendingPageSelection) -> None:
         "article_title": pending.article_title,
         "article_data":  pending.article_data,
         "selected_wp_site_urls": pending.selected_wp_site_urls,
-        "_type":         "page_selection",   # phân biệt với article selection
-    }, ensure_ascii=False)
-    expires_at = int(time.time()) + _TTL_SECONDS
-
-    with _get_conn() as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO selection_cache (cache_key, payload, expires_at)
-            VALUES (?, ?, ?)
-        """, (key, payload, expires_at))
+        "_type": "page_selection",
+    })
 
 
 def load_pending_pages(chat_id: str) -> PendingPageSelection | None:
-    """Load pending page selection còn hạn."""
-    key = _make_page_key(chat_id)
-    now = int(time.time())
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT payload FROM selection_cache WHERE cache_key = ? AND expires_at > ?",
-            (key, now)
-        ).fetchone()
-
-    if not row:
+    data = _load(_make_key(_PAGE_KEY_PREFIX, chat_id))
+    if not data or data.get("_type") != "page_selection":
         return None
-
-    data = json.loads(row[0])
-    if data.get("_type") != "page_selection":
-        return None
-
     return PendingPageSelection(
         pages         = data["pages"],
         topic         = data["topic"],
-        platforms     = data.get("platforms") or [data.get("platform", "facebook")],  # backward-compat
+        platforms     = data.get("platforms") or [data.get("platform", "facebook")],
         schedule      = data["schedule"],
         article_id    = data["article_id"],
         article_title = data["article_title"],
-        article_data  = data.get("article_data"), 
+        article_data  = data.get("article_data"),
         selected_wp_site_urls = data.get("selected_wp_site_urls"),
     )
 
 
 def delete_pending_pages(chat_id: str) -> None:
-    """Xoá page selection sau khi user đã chọn xong."""
-    key = _make_page_key(chat_id)
-    with _get_conn() as conn:
-        conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
-        
+    _delete(_make_key(_PAGE_KEY_PREFIX, chat_id))
+
+
+# ── WordPress site selection ─────────────────────────────────────────────────
 
 @dataclass
 class PendingWPSiteSelection:
@@ -203,53 +192,96 @@ class PendingWPSiteSelection:
     schedule:      str
     article_id:    str
     article_title: str
-    article_data:  dict | None = None 
+    article_data:  dict | None = None
     selected_page_ids: list[str] | None = None
+    rewrite_mode:  bool | None = None
+
 
 _WP_SITE_KEY_PREFIX = "wp_site_sel:"
 
-def _make_wp_site_key(chat_id: str) -> str:
-    raw = f"{_WP_SITE_KEY_PREFIX}{chat_id}"
-    return hashlib.sha256(raw.encode()).hexdigest()
 
 def save_pending_wp_sites(chat_id: str, pending: PendingWPSiteSelection) -> None:
-    key = _make_wp_site_key(chat_id)
-    payload = json.dumps({
-        "sites": pending.sites, "topic": pending.topic,
-        "platforms": pending.platforms, "schedule": pending.schedule,
-        "article_id": pending.article_id, "article_title": pending.article_title,
+    key = _make_key(_WP_SITE_KEY_PREFIX, chat_id)
+    _save(key, {
+        "sites":           pending.sites,
+        "topic":           pending.topic,
+        "platforms":       pending.platforms,
+        "schedule":        pending.schedule,
+        "article_id":      pending.article_id,
+        "article_title":   pending.article_title,
+        "article_data":    pending.article_data,
         "selected_page_ids": pending.selected_page_ids,
-        "article_data": pending.article_data,
         "_type": "wp_site_selection",
-    }, ensure_ascii=False)
-    expires_at = int(time.time()) + _TTL_SECONDS
-    with _get_conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO selection_cache (cache_key, payload, expires_at) VALUES (?, ?, ?)",
-            (key, payload, expires_at)
-        )
+    })
 
-def load_pending_wp_sites(chat_id: str) -> "PendingWPSiteSelection | None":
-    key = _make_wp_site_key(chat_id)
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT payload FROM selection_cache WHERE cache_key = ? AND expires_at > ?",
-            (key, int(time.time()))
-        ).fetchone()
-    if not row:
-        return None
-    data = json.loads(row[0])
-    if data.get("_type") != "wp_site_selection":
+
+def load_pending_wp_sites(chat_id: str) -> PendingWPSiteSelection | None:
+    data = _load(_make_key(_WP_SITE_KEY_PREFIX, chat_id))
+    if not data or data.get("_type") != "wp_site_selection":
         return None
     return PendingWPSiteSelection(
-        sites=data["sites"], topic=data["topic"], platforms=data["platforms"],
-        schedule=data["schedule"], article_id=data["article_id"],
-        article_title=data["article_title"],
-        selected_page_ids=data.get("selected_page_ids"),
-        article_data=data.get("article_data"),  
+        sites          = data["sites"],
+        topic          = data["topic"],
+        platforms      = data["platforms"],
+        schedule       = data["schedule"],
+        article_id     = data["article_id"],
+        article_title  = data["article_title"],
+        article_data   = data.get("article_data"),
+        selected_page_ids = data.get("selected_page_ids"),
     )
 
+
 def delete_pending_wp_sites(chat_id: str) -> None:
-    key = _make_wp_site_key(chat_id)
-    with _get_conn() as conn:
-        conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
+    _delete(_make_key(_WP_SITE_KEY_PREFIX, chat_id))
+
+
+# ── WordPress rewrite mode ───────────────────────────────────────────────────
+
+@dataclass
+class PendingWPRewriteMode:
+    selected_wp_site_urls: list[str]
+    topic:                 str
+    platforms:             list[str]
+    schedule:              str
+    article_id:            str
+    article_title:         str
+    article_data:          dict | None = None
+    selected_page_ids:     list[str] | None = None
+
+
+_WP_REWRITE_KEY_PREFIX = "wp_rewrite_sel:"
+
+
+def save_pending_wp_rewrite_mode(chat_id: str, pending: PendingWPRewriteMode) -> None:
+    key = _make_key(_WP_REWRITE_KEY_PREFIX, chat_id)
+    _save(key, {
+        "selected_wp_site_urls": pending.selected_wp_site_urls,
+        "topic":                 pending.topic,
+        "platforms":             pending.platforms,
+        "schedule":              pending.schedule,
+        "article_id":            pending.article_id,
+        "article_title":         pending.article_title,
+        "article_data":          pending.article_data,
+        "selected_page_ids":     pending.selected_page_ids,
+        "_type": "wp_rewrite_mode",
+    })
+
+
+def load_pending_wp_rewrite_mode(chat_id: str) -> PendingWPRewriteMode | None:
+    data = _load(_make_key(_WP_REWRITE_KEY_PREFIX, chat_id))
+    if not data or data.get("_type") != "wp_rewrite_mode":
+        return None
+    return PendingWPRewriteMode(
+        selected_wp_site_urls = data["selected_wp_site_urls"],
+        topic                 = data["topic"],
+        platforms             = data["platforms"],
+        schedule              = data["schedule"],
+        article_id            = data["article_id"],
+        article_title         = data["article_title"],
+        article_data          = data.get("article_data"),
+        selected_page_ids     = data.get("selected_page_ids"),
+    )
+
+
+def delete_pending_wp_rewrite_mode(chat_id: str) -> None:
+    _delete(_make_key(_WP_REWRITE_KEY_PREFIX, chat_id))

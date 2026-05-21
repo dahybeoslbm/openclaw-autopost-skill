@@ -24,7 +24,6 @@ FB_API_BASE = "https://graph.facebook.com/v25.0"
 
 _FIXED_FOOTER = """Comment "Tư vấn" hoặc liên hệ Hotline: 1900636060 để nhận báo giá cực sốc!
 Bắt đầu hành trình của bạn ngay tại:
-Website: https://timchuyenbay.vn/
 Cần tư vấn chặng bay êm ái, giá mềm? Nhắn ngay cho chúng mình:
 Zalo: https://zalo.me/2941581384627345950
 Ghé thăm chúng mình tại: https://maps.app.goo.gl/uMhLZedph1ki9rgd7?g_st=ic"""
