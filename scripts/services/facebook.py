@@ -8,8 +8,6 @@ Cấu hình .env:
 import calendar
 import concurrent.futures
 import datetime
-import json
-import os
 from time import sleep
 
 import requests
@@ -40,10 +38,43 @@ class FacebookService:
     def __init__(self, config: FacebookConfig):
         self._config = config
 
-    def _build_caption(self, text: str) -> str:
-        return f"{text}\n\n{_FIXED_FOOTER}"
-    
-    # ── Post đến 1 page ──────────────────────────────────────────────────────
+    # ── Comment footer ────────────────────────────────────────────────────────
+
+    def _post_first_comment(
+        self,
+        page_id: str,
+        page_token: str,
+        post_id: str,
+    ) -> dict | None:
+        """
+        Đăng _FIXED_FOOTER làm comment đầu tiên lên post vừa tạo.
+        Dùng Page access token — cần pages_manage_engagement permission.
+        Không raise khi thất bại để không block luồng chính.
+        Bỏ qua với scheduled post (post_id rỗng hoặc chưa published).
+        """
+        if not post_id:
+            return None
+        try:
+            resp = requests.post(
+                f"{FB_API_BASE}/{post_id}/comments",
+                data={"message": _FIXED_FOOTER, "access_token": page_token},
+                timeout=15,
+            )
+            if resp.ok:
+                comment_id = resp.json().get("id", "")
+                logger.info("  → [Facebook] 💬 First comment: %s", comment_id)
+                return resp.json()
+            logger.warning(
+                "  → [Facebook] ⚠️ First comment HTTP %d: %s",
+                resp.status_code, resp.text[:200],
+            )
+            return None
+        except Exception as exc:
+            logger.warning("  → [Facebook] ⚠️ First comment exception: %s", exc)
+            return None
+
+    # ── Post đến 1 page ───────────────────────────────────────────────────────
+
     def post_to_page(
         self,
         page_id: str,
@@ -77,11 +108,7 @@ class FacebookService:
     def _upload_photo_unpublished(
         self, page_id: str, token: str, image_url: str
     ) -> str | None:
-        payload = {
-            "url": image_url,
-            "published": "false",
-            "access_token": token,
-        }
+        payload = {"url": image_url, "published": "false", "access_token": token}
         for attempt in range(1, 4):
             resp = requests.post(f"{FB_API_BASE}/{page_id}/photos", data=payload, timeout=30)
             if resp.ok:
@@ -100,7 +127,6 @@ class FacebookService:
         self, page_id: str, token: str, image_urls: list[str],
         caption: str, scheduled_at: str | None
     ) -> dict:
-        import concurrent.futures
         photo_ids = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
             futures = [
@@ -116,13 +142,9 @@ class FacebookService:
             logger.warning("  → [Facebook] Không upload được ảnh nào, fallback ảnh đơn")
             return self._post_photo(page_id, token, image_urls[0], caption, scheduled_at)
 
-        payload: dict = {
-            "message": caption,
-            "access_token": token,
-        }
+        payload: dict = {"message": caption, "access_token": token}
         for i, photo_id in enumerate(photo_ids):
             payload[f"attached_media[{i}]"] = f'{{"media_fbid":"{photo_id}"}}'
-
         if scheduled_at:
             payload["scheduled_publish_time"] = _to_unix(scheduled_at)
             payload["published"] = "false"
@@ -138,29 +160,21 @@ class FacebookService:
                 sleep(0.5)
                 continue
             logger.error("  → [Facebook] Multi-photo thất bại: HTTP %d | %s",
-                        resp.status_code, resp.text[:500])
+                         resp.status_code, resp.text[:500])
             resp.raise_for_status()
         return resp.json()
-    
+
     def _post_photo(
         self, page_id: str, token: str, image_url: str,
         caption: str, scheduled_at: str | None
     ) -> dict:
-        payload: dict = {
-            "url": image_url,
-            "caption": caption,
-            "access_token": token,
-        }
+        payload: dict = {"url": image_url, "caption": caption, "access_token": token}
         if scheduled_at:
             payload["scheduled_publish_time"] = _to_unix(scheduled_at)
             payload["published"] = False
         resp = requests.post(f"{FB_API_BASE}/{page_id}/photos", data=payload, timeout=30)
         if not resp.ok:
-            logger.error(
-            "  → [Facebook] HTTP %d | Body: %s", 
-            resp.status_code, 
-            resp.text[:500]   # in tối đa 500 ký tự
-        )
+            logger.error("  → [Facebook] HTTP %d | Body: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()
         return resp.json()
 
@@ -168,26 +182,54 @@ class FacebookService:
         self, page_id: str, token: str, video_url: str,
         description: str, scheduled_at: str | None
     ) -> dict:
-        payload: dict = {
-            "file_url": video_url,
-            "description": description,
-            "access_token": token,
-        }
+        payload: dict = {"file_url": video_url, "description": description, "access_token": token}
         if scheduled_at:
             payload["scheduled_publish_time"] = _to_unix(scheduled_at)
             payload["published"] = False
         resp = requests.post(f"{FB_API_BASE}/{page_id}/videos", data=payload, timeout=60)
-        
         if not resp.ok:
-            logger.error(
-                "  → [Facebook] HTTP %d | Body: %s", 
-                resp.status_code, 
-                resp.text[:500]   # in tối đa 500 ký tự
-        )
+            logger.error("  → [Facebook] HTTP %d | Body: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()
         return resp.json()
 
     # ── Post đến nhiều pages song song ───────────────────────────────────────
+
+    def _post_one_page(
+        self,
+        page: dict,
+        text: str,
+        image_urls: list[str] | None,
+        video_url: str | None,
+        scheduled_at: str | None,
+        page_texts: dict[str, str] | None,
+    ) -> FacebookPostResult:
+        """
+        Đăng 1 page và tự động thêm footer làm first comment.
+        Dùng chung cho post_to_all_pages và post_to_selected_pages.
+        """
+        pid   = page.get("id", "")
+        token = page.get("access_token", "")
+        name  = page.get("name", pid)
+        try:
+            caption = (page_texts or {}).get(pid, text)
+            result  = self.post_to_page(pid, token, caption, image_urls, video_url, scheduled_at)
+            post_id = result.get("id", "")
+            logger.info("  → [Facebook] ✅ %s | post_id=%s", name, post_id)
+
+            # Footer đăng làm comment — chỉ với bài publish ngay (không hẹn giờ)
+            if not scheduled_at:
+                self._post_first_comment(pid, token, post_id)
+
+            return FacebookPostResult(
+                page_id=pid, page_name=name,
+                status="success", post_id=post_id,
+            )
+        except Exception as exc:
+            logger.warning("  → [Facebook] ❌ %s — %s", name, exc)
+            return FacebookPostResult(
+                page_id=pid, page_name=name,
+                status="error", error=str(exc),
+            )
 
     def post_to_all_pages(
         self,
@@ -195,38 +237,21 @@ class FacebookService:
         image_urls: list[str] | None = None,
         video_url: str | None = None,
         scheduled_at: str | None = None,
-        page_texts: dict[str, str] | None = None
+        page_texts: dict[str, str] | None = None,
     ) -> list[FacebookPostResult]:
         """Đăng lên tất cả pages trong FACEBOOK_PAGES song song."""
         targets = self._config.pages
         if not targets:
             logger.warning("  → [Facebook] Không tìm thấy page nào trong FACEBOOK_PAGES")
             return []
-
-        def _post_one(page: dict) -> FacebookPostResult:
-            pid   = page.get("id", "")
-            token = page.get("access_token", "")
-            name  = page.get("name", pid)
-            try:
-                caption = self._build_caption((page_texts or {}).get(pid, text))
-                result = self.post_to_page(
-                    pid, token, caption, image_urls, video_url, scheduled_at
-                )
-                logger.info("  → [Facebook] ✅ %s | post_id=%s", name, result.get("id", ""))
-                return FacebookPostResult(
-                    page_id=pid, page_name=name,
-                    status="success", post_id=result.get("id", ""),
-                )
-            except Exception as exc:
-                logger.warning("  → [Facebook] ❌ %s — %s", name, exc)
-                return FacebookPostResult(
-                    page_id=pid, page_name=name,
-                    status="error", error=str(exc),
-                )
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-            return list(ex.map(_post_one, targets))
-    
+            return list(ex.map(
+                lambda page: self._post_one_page(
+                    page, text, image_urls, video_url, scheduled_at, page_texts
+                ),
+                targets,
+            ))
+
     def post_to_selected_pages(
         self,
         page_ids: list[str],
@@ -234,33 +259,17 @@ class FacebookService:
         image_urls: list[str] | None = None,
         video_url: str | None = None,
         scheduled_at: str | None = None,
-        page_texts: dict[str, str] | None = None
+        page_texts: dict[str, str] | None = None,
     ) -> list[FacebookPostResult]:
-        """
-        Đăng lên các pages được chọn theo page_ids.
-        Lọc từ self._config.pages — chỉ đăng đúng pages trong danh sách.
-        """
+        """Đăng lên các pages được chọn theo page_ids."""
         targets = [p for p in self._config.pages if p.get("id") in page_ids]
-
         if not targets:
             logger.warning("  → [Facebook] Không tìm thấy page nào khớp page_ids: %s", page_ids)
             return []
-
-        # Tái sử dụng logic song song của post_to_all_pages
-        def _post_one(page: dict) -> FacebookPostResult:
-            pid   = page.get("id", "")
-            token = page.get("access_token", "")
-            name  = page.get("name", pid)
-            try:
-                caption = self._build_caption((page_texts or {}).get(pid, text))
-                result = self.post_to_page(pid, token, caption, image_urls, video_url, scheduled_at)
-                logger.info("  → [Facebook] ✅ %s | post_id=%s", name, result.get("id", ""))
-                return FacebookPostResult(page_id=pid, page_name=name,
-                                        status="success", post_id=result.get("id", ""))
-            except Exception as exc:
-                logger.warning("  → [Facebook] ❌ %s — %s", name, exc)
-                return FacebookPostResult(page_id=pid, page_name=name,
-                                        status="error", error=str(exc))
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-            return list(ex.map(_post_one, targets))
+            return list(ex.map(
+                lambda page: self._post_one_page(
+                    page, text, image_urls, video_url, scheduled_at, page_texts
+                ),
+                targets,
+            ))
