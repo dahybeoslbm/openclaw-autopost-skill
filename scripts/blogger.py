@@ -328,6 +328,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         pending_wp = load_pending_wp_sites(cfg.chat_id)
         if pending_wp:
             p = user_prompt.strip().lower()
+
             if p in _ALL_PAGES_KEYWORDS:
                 selected_urls = [s["url"] for s in pending_wp.sites]
             else:
@@ -354,6 +355,8 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
                 platforms     = pending_wp.platforms,
                 schedule_time = pending_wp.schedule,
             )
+            # rewrite_mode=None → _continue_publish sẽ hỏi rewrite
+            # (áp dụng cho cả "tất cả" lẫn nhập số — 2+ sites đều cần rewrite)
             return _continue_publish(
                 cfg, gemini, result, parsed, webhook_url,
                 selected_wp_site_urls = selected_urls,
@@ -462,6 +465,10 @@ def _continue_publish(
       "blog"  (default) → WP + TẤT CẢ Buffer channels
       "wordpress"       → chỉ WP
       Tên platform cụ thể → chỉ platform đó
+
+    WordPress luôn lưu draft (save_as_draft=True) để con người kiểm duyệt
+    trước khi publish. Rewrite chỉ được hỏi khi user chọn sites bằng số
+    cụ thể (ví dụ "1 2"), còn "tất cả" thì dùng nội dung gốc.
     """
     platforms     = [p.lower() for p in parsed.platforms]
     publish_all   = platforms == ["blog"]
@@ -518,12 +525,15 @@ def _continue_publish(
         lines = [f"🌐 Tìm thấy {len(valid_wp_sites)} WordPress sites. Chọn site muốn đăng:"]
         for i, s in enumerate(valid_wp_sites):
             lines.append(f"  {i+1}. {s.site_url}")
-        lines.append("→ Nhập số thứ tự (vd: '1 3'), hoặc 'tất cả' để đăng hết.")
+        lines.append("→ Nhập số thứ tự (vd: '1 2') hoặc 'tất cả'. Bước sau sẽ hỏi rewrite.")
         lines.append("  (Gõ 'huỷ' để bỏ qua)")
         print("\n".join(lines))
         return PublishResult(file_path="", error="PENDING_WP_SITE_SELECTION")
 
-    # ── Guard: hỏi rewrite mode (chỉ khi chọn 2+ WP sites) ──────────────────
+    # ── Guard: hỏi rewrite mode (chỉ khi chọn sites bằng số cụ thể) ─────────
+    # rewrite_mode=None  → user chọn bằng số → hỏi
+    # rewrite_mode=False → user gõ "tất cả"  → bỏ qua, dùng nội dung gốc
+    # rewrite_mode=True  → đã xác nhận rewrite
     if (
         should_wp
         and selected_wp_site_urls is not None
@@ -557,10 +567,12 @@ def _continue_publish(
     )
     wp_sites_to_publish = [s for s in wp_sites_to_publish if s.is_valid]
 
-    # Draft khi: nhiều sites HOẶC có rewrite
-    save_as_draft = len(wp_sites_to_publish) > 1 or bool(rewrite_mode)
+    # ── WordPress luôn lưu draft để kiểm duyệt trước khi publish ─────────────
+    save_as_draft = True
 
     # Số bản cần viết lại (site đầu giữ bản gốc, site 2+ nhận bản rewrite)
+    # rewrite_mode=True  → rewrite
+    # rewrite_mode=False hoặc None (1 site) → không rewrite
     rewrite_count = (len(wp_sites_to_publish) - 1) if rewrite_mode else 0
 
     # ── Bước 4: Gemini — rewrite + captions trong 1 request ──────────────────
@@ -602,7 +614,6 @@ def _continue_publish(
             + "..."
         )
         if need_rewrite:
-            # Gộp rewrite + caption trong 1 request (giữ nguyên flow cũ)
             rewritten_versions, social_captions = gemini.rewrite_and_caption_batch(
                 original_html  = drive_article.content,
                 topic          = parsed.topic,
@@ -612,8 +623,6 @@ def _continue_publish(
                 facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
             )
         elif need_captions:
-            # Chỉ caption (Facebook/Buffer/...) — dùng standalone prompt
-            # tránh conflict JSON schema trong rewrite_and_caption_batch
             social_captions = gemini.generate_social_captions(
                 topic          = parsed.topic,
                 title          = drive_article.title,
@@ -644,7 +653,6 @@ def _continue_publish(
         }
 
     # ── Build (site, article_data) pairs ─────────────────────────────────────
-    # Site 0 = bản gốc; site 1+ = bản rewrite tương ứng (nếu có)
     base_article_data = {
         "seo_title":        drive_article.title,
         "meta_description": plain[:160],
@@ -733,16 +741,12 @@ def _continue_publish(
             try:
                 wp_resp = wp_f.result()
                 if wp_resp:
-                    if wp_resp.get("status") == "draft":
-                        edit_url = (
-                            f"{site_url.rstrip('/')}/wp-admin/post.php"
-                            f"?post={wp_resp['id']}&action=edit"
-                        )
-                        print(f"✅ [{site_url}] Bản nháp đã tạo")
-                        print(f"   └─ Thay ảnh rồi Publish tại: {edit_url}")
-                    else:
-                        logger.info("  → ✅ WordPress [%s]: %s", site_url, wp_resp["link"])
-                        print(f"✅ [{site_url}] Đã đăng: {wp_resp['link']}")
+                    edit_url = (
+                        f"{site_url.rstrip('/')}/wp-admin/post.php"
+                        f"?post={wp_resp['id']}&action=edit"
+                    )
+                    print(f"✅ [{site_url}] Bản nháp đã tạo")
+                    print(f"   └─ Kiểm duyệt rồi Publish tại: {edit_url}")
 
                     if result.wp_post_id is None:
                         result.wp_post_id  = wp_resp["id"]

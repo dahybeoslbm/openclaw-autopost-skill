@@ -20,6 +20,7 @@ import requests
 
 from utils.models import BufferPostResult
 from utils.logger import get_logger
+from utils import buffer_schedule_cache as bsc
 from .platforms.facebook       import FacebookPlatform
 from .platforms.instagram      import InstagramPlatform
 # from .platforms.tiktok         import TikTokPlatform

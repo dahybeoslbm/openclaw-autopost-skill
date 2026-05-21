@@ -290,7 +290,7 @@ Chỉ trả về các key sau, không thêm key khác:
 NHIỆM VỤ 1 — VIẾT LẠI {rewrite_count} BẢN UNIQUE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 NỘI DUNG GỐC:
-{plain[:4000]}
+{plain[:8000]}
 
 Yêu cầu mỗi bản:
 - Giữ nguyên cấu trúc thẻ HTML h1/h2/p/ul, copy y hệt thẻ <img>

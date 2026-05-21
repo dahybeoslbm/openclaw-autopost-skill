@@ -155,20 +155,70 @@ def _detect_platforms(text: str) -> list[str]:
 
 
 def _detect_topic(text: str, original: str) -> str:
-    match = re.search(r"(về|tại|ở|du lịch|bài)\s+([^,.\n]+)", text)
-    if not match:
-        return original[:30]
-    
-    raw = match.group(2).strip()
-    
-    # Cắt bỏ phần "đăng <platform>" nếu có
-    raw = re.sub(
-        r"\s+(đăng|post|lên)\s+(facebook|instagram|tiktok|threads|twitter|"
-        r"linkedin|youtube|bluesky|pinterest|mastodon|wordpress|wp|fb|ig).*$",
-        "", raw
-    ).strip()
-    
-    return raw
+    """
+    Strip time → platform → trigger words → connector words.
+    Phần còn lại là topic.
+    """
+    s = text.strip()
+
+    # ── 1. Strip time expressions (phức tạp → đơn giản) ──────────────────────
+    _TIME = [
+        # "trong 3 phút nữa", "3 phút nữa", "2 tiếng nữa"
+        r"\btrong\s+\d+\s*(?:phút|tiếng|giờ)\s*nữa",
+        r"\b\d+\s*(?:phút|tiếng|giờ)\s*nữa",
+        # "ngày mai lúc 8h30", "ngày mốt lúc 9h"
+        r"\bngày\s+(?:mai|mốt|kia)(?:\s+lúc\s+\d{1,2}\s*(?:h|giờ)\s*\d{0,2}\s*(?:phút|rưỡi)?)?",
+        # "hôm nay lúc 20h"
+        r"\bhôm\s+nay(?:\s+lúc\s+\d{1,2}\s*(?:h|giờ)\s*\d{0,2}\s*(?:phút|rưỡi)?)?",
+        # "vào lúc 2 giờ rưỡi", "lúc 8h30", "lúc 20:30"
+        r"\b(?:vào\s+)?lúc\s+\d{1,2}\s*(?:h|giờ|:)\s*\d{0,2}\s*(?:phút|rưỡi)?",
+        # "ngày 20 tháng 5 năm 2026 lúc 8h"
+        r"\bngày\s+\d{1,2}\s+tháng\s+\d{1,2}(?:\s+(?:năm\s+)?\d{4})?(?:\s+lúc\s+\d{1,2}\s*(?:h|giờ)\s*\d{0,2})?",
+        # "20/5/2026 20:30", "20/5"
+        r"\b\d{1,2}[/\-]\d{1,2}(?:[/\-]\d{4})?(?:\s+\d{1,2}[h:]\d{0,2})?",
+        # "8h30", "20h" standalone
+        r"\b\d{1,2}h\d{0,2}\b",
+        # "ngay lập tức", "bây giờ"
+        r"\b(?:ngay\s+lập\s+tức|ngay\s+bây\s+giờ|bây\s+giờ)\b",
+        # trailing "vào" còn sót sau khi strip time
+        r"\bvào\s*$",
+    ]
+    for p in _TIME:
+        s = re.sub(p, " ", s, flags=re.IGNORECASE)
+
+    # ── 2. Strip platform expressions ─────────────────────────────────────────
+    _PLT = (
+        r"wordpress|wp|facebook|fb|instagram|ig|tiktok|tik\s+tok|"
+        r"threads|twitter|x\.com|linkedin|youtube|yt|bluesky|blue\s+sky|"
+        r"pinterest|mastodon|google\s+business|google\s+my\s+business"
+    )
+    # "đăng lên facebook", "post trên instagram"
+    s = re.sub(rf"\b(?:đăng|post|lên|trên|qua|lên\s+trang)\s+(?:{_PLT})\b", " ", s, flags=re.IGNORECASE)
+    # standalone platform còn sót
+    s = re.sub(rf"\b(?:{_PLT})\b", " ", s, flags=re.IGNORECASE)
+
+    # ── 3. Strip trigger / action words ───────────────────────────────────────
+    # Đầu câu: "hãy đăng bài", "cho tôi post bài về", "viết bài"
+    s = re.sub(
+        r"^(?:(?:hãy|giúp\s+tôi|cho\s+tôi)\s+)?(?:đăng|post|viết|tạo|soạn)\s+(?:bài\s+(?:viết\s+)?)?",
+        "", s, flags=re.IGNORECASE
+    )
+    # Giữa câu: "bài viết về", "nội dung về", "review về", "giới thiệu về"
+    s = re.sub(
+        r"\b(?:bài\s+viết|bài\s+đăng|nội\s+dung|review|giới\s+thiệu)\s+(?:về\s+|tại\s+|ở\s+)?",
+        " ", s, flags=re.IGNORECASE
+    )
+
+    # ── 4. Strip connector / preposition words ────────────────────────────────
+    # "về", "tại", "ở", "du lịch" đứng trước topic
+    s = re.sub(r"\b(?:về|tại|ở|du\s+lịch|bài)\s+", " ", s, flags=re.IGNORECASE)
+    # trailing connectors còn thừa
+    s = re.sub(r"\s+\b(?:vào|trong|lúc|và|hoặc|hay|đăng|post|trên|lên|tại|ở)\s*$", "", s, flags=re.IGNORECASE)
+
+    # ── 5. Cleanup ────────────────────────────────────────────────────────────
+    s = re.sub(r"\s+", " ", s).strip().strip(",.!")
+
+    return s if len(s) >= 2 else original[:50]
 
 
 def parse_request(user_prompt: str) -> ParsedRequest:
