@@ -106,6 +106,14 @@ class BufferClient:
     @classmethod
     def from_env(cls) -> "BufferClient":
         return cls(api_key=os.environ.get("BUFFER_API_KEY") or None)
+    
+    @classmethod
+    def get_configured_platforms(cls) -> list[str]:
+        return [
+            platform
+            for platform, env_key in _PLATFORM_ENV_KEYS.items()
+            if os.environ.get(env_key)
+        ]
 
     # ── INTERNAL: API KEY RESOLUTION ────────────────────────
 

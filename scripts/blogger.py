@@ -473,10 +473,21 @@ def _continue_publish(
     platforms     = [p.lower() for p in parsed.platforms]
     publish_all   = platforms == ["blog"]
     should_wp     = publish_all or "wordpress" in platforms
-    buffer_list   = [p for p in platforms if p in _BUFFER_PLATFORMS]
-    should_buffer = cfg.buffer.is_valid and (publish_all or bool(buffer_list))
-    buffer_platforms = [] if publish_all else buffer_list
     should_facebook  = cfg.facebook.is_valid and (publish_all or "facebook" in platforms)
+
+    # buffer_platforms: đọc từ env thay vì hardcode hay để trống
+    # publish_all=True  → lấy tất cả platform có channel trong .env
+    # publish_all=False → chỉ lấy platform user yêu cầu
+    if publish_all:
+        buffer_platforms = [
+            p for p in BufferClient.get_configured_platforms()
+            if p != "facebook"   # Facebook xử lý riêng qua FACEBOOK_PAGES
+        ]
+    else:
+        buffer_platforms = [p for p in platforms if p in _BUFFER_PLATFORMS]
+
+    should_buffer = cfg.buffer.is_valid and bool(buffer_platforms)
+
 
     # ── Bước 3: Thu thập Drive image URLs (cho Buffer/Facebook) ──────────────
     logger.info("[3/6] Lấy ảnh từ Google Docs (%d ảnh)", drive_article.image_count())
@@ -587,13 +598,12 @@ def _continue_publish(
         )
 
     # Platforms cần gen caption
-    gemini_platforms: list[str] | None = None
-    if not publish_all:
-        gemini_platforms = list(buffer_platforms)
-        if should_facebook:
-            gemini_platforms.append("facebook")
-        if not gemini_platforms:
-            gemini_platforms = None
+    # gemini_platforms: tập hợp platform thực sự sẽ đăng
+    # → Gemini chỉ gen caption cho đúng những platform này, không gen thừa
+    _active_for_gemini = list(buffer_platforms)
+    if should_facebook:
+        _active_for_gemini.append("facebook")
+    gemini_platforms: list[str] | None = _active_for_gemini or None
 
     need_captions = should_buffer or should_facebook
     need_rewrite  = rewrite_count > 0
