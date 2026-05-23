@@ -114,6 +114,24 @@ def _notify_webhook(webhook_url: str, title: str, file_path: str) -> None:
         )
     except Exception as e:
         logger.warning("Webhook error: %s", e)
+        
+# ── Content helpers ───────────────────────────────────────────────────────────
+
+def _strip_leading_h1(html: str) -> str:
+    """Strip the first <h1> block from content HTML.
+
+    WordPress renders the post title (seo_title) itself, so keeping <h1>
+    inside content_html causes a duplicate heading on the page.
+    The Google Doc legitimately contains an <h1> — we strip it only at the
+    WP publish boundary.
+    """
+    return _img_re.sub(
+        r'^\s*<h1[^>]*>.*?</h1>\s*',
+        '',
+        html,
+        count=1,
+        flags=_img_re.DOTALL | _img_re.IGNORECASE,
+    )
 
 # ── Input classifiers ─────────────────────────────────────────────────────────
 
@@ -587,7 +605,7 @@ def _continue_publish(
         "meta_description": plain[:160],
         "focus_keyword":    parsed.topic,
         "excerpt":          plain[:300],
-        "content_html":     drive_article.content,
+        "content_html":     _strip_leading_h1(drive_article.content),
         "social_captions":  {},
     }
 
@@ -604,7 +622,7 @@ def _continue_publish(
             )
             site_article_pairs.append((site_cfg, {
                 **base_article_data,
-                "content_html": new_html,
+                "content_html": _strip_leading_h1(new_html),
                 "seo_title":    new_title,
             }))
 
