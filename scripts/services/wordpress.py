@@ -165,22 +165,51 @@ class WordPressService:
 
     # ── Duplicate check ───────────────────────────────────────────────────────
 
-    def post_exists(self, title: str) -> bool:
-        """Kiểm tra bài viết có tiêu đề này đã tồn tại chưa."""
+    def check_duplicate(self, seo_title: str) -> list[dict]:
+        """
+        Kiểm tra bài viết trùng tiêu đề trên WP (mọi status).
+        Trả về list các bài trùng: [{"id": 123, "title": "...", "status": "draft", "edit_url": "..."}]
+        """
+        params = {
+            "search":   seo_title,
+            "status":   "publish,future,draft,pending,private",
+            "per_page": 20,
+            "_fields":  "id,title,status,link",
+        }
         try:
-            resp = self._session.get(
-                url=f"{self._config.api_base}/posts",
-                params={"search": title, "status": "any", "_fields": "id,title"},
+            resp = requests.get(
+                f"{self._config.api_base}/posts",
+                params=params,
+                auth=(self._config.username, self._config.app_password),
                 timeout=self._config.timeout,
             )
-            for post in resp.json():
-                if post["title"]["rendered"].lower() == title.lower():
-                    logger.warning("  → Bài đã tồn tại, ID: %d", post["id"])
-                    return True
-        except Exception as e:
-            logger.error("  → post_exists error: %s", e)
-        return False
+            resp.raise_for_status()
+            posts = resp.json()
+        except Exception as exc:
+            logger.warning("  → [WP] check_duplicate thất bại: %s", exc)
+            return []
 
+        title_lower = seo_title.strip().lower()
+        matched = []
+        for p in posts:
+            wp_title = (p.get("title") or {}).get("rendered", "")
+            # strip HTML entities nếu có
+            import html as _html
+            wp_title_clean = _html.unescape(wp_title).strip().lower()
+            if wp_title_clean == title_lower:
+                edit_url = (
+                    f"{self._config.site_url.rstrip('/')}/wp-admin/post.php"
+                    f"?post={p['id']}&action=edit"
+                )
+                matched.append({
+                    "id":       p["id"],
+                    "title":    wp_title,
+                    "status":   p["status"],
+                    "edit_url": edit_url,
+                })
+        return matched
+
+    
     # ── Publish ───────────────────────────────────────────────────────────────
 
     def publish(

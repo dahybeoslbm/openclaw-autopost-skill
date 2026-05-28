@@ -76,6 +76,7 @@ _NON_ERROR_STATES = {
     "INVALID_CHOICE",
     "INVALID_PAGE_CHOICE",
     "INVALID_WP_SITE_CHOICE",
+    "DUPLICATE_POST",
     "",
 }
 
@@ -526,6 +527,31 @@ def _continue_publish(
     # Site đầu tiên dùng bản gốc, các site sau nhận bản rewrite riêng
     rewrite_count = max(0, len(wp_sites_to_publish) - 1)
 
+    if should_wp:
+        _STATUS_LABELS = {
+            "publish": "Đã publish",
+            "draft":   "Bản nháp",
+            "pending": "Chờ duyệt",
+            "future":  "Đã lên lịch",
+            "private": "Riêng tư",
+        }
+        all_duplicates: list[str] = []
+
+        for site_cfg in wp_sites_to_publish:
+            wp_svc     = WordPressService(site_cfg)
+            duplicates = wp_svc.check_duplicate(drive_article.title)
+            for dup in duplicates:
+                label = _STATUS_LABELS.get(dup["status"], dup["status"])
+                all_duplicates.append(
+                    f"  ⚠️  [{site_cfg.site_url}] Bài \"{dup['title']}\" "
+                    f"đã tồn tại ({label})\n"
+                    f"     └─ {dup['edit_url']}"
+                )
+
+        if all_duplicates:
+            print("\n".join(["⛔ Phát hiện bài viết trùng lặp:"] + all_duplicates))
+            return PublishResult(file_path="", error="DUPLICATE_POST")
+    
     # ── Bước 4: Gemini — rewrite + captions trong 1 request ──────────────────
     plain = drive_article.plain_text()
 
