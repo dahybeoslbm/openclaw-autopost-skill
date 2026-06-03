@@ -16,11 +16,13 @@ import concurrent.futures
 from urllib.parse import urlparse as _urlparse
 
 import requests
+from bs4 import BeautifulSoup
 
-from config import FacebookConfig, load_config
+from config import FacebookConfig, ZaloConfig, load_config
 from services.facebook import FacebookService
+from services.zalo import ZaloService
 from utils.logger import get_logger
-from utils.models import FacebookPostResult, PublishResult, BufferPostResult
+from utils.models import FacebookPostResult, ZaloPostResult, PublishResult, BufferPostResult
 from utils.parser import parse_request
 from services.gemini import GeminiService
 from services.wordpress import WordPressService
@@ -117,6 +119,17 @@ def _notify_webhook(webhook_url: str, title: str, file_path: str) -> None:
         logger.warning("Webhook error: %s", e)
         
 # ── Content helpers ───────────────────────────────────────────────────────────
+
+def _extract_first_paragraph(html: str) -> str:
+    """Extracts the first paragraph text from HTML, skipping headings."""
+    soup = BeautifulSoup(html, "html.parser")
+    for p in soup.find_all('p'):
+        text = p.get_text(strip=True)
+        if text:
+            return text
+    for heading in soup.find_all(['h1', 'h2', 'h3']):
+        heading.decompose()
+    return soup.get_text(strip=True)
 
 def _strip_leading_h1(html: str) -> str:
     """Strip the first <h1> block from content HTML.
@@ -219,6 +232,42 @@ def _worker_facebook(
         video_url    = video_url,
         scheduled_at = scheduled_at,
         page_texts   = page_texts,
+    )
+
+
+def _worker_zalo(
+    cfg_zalo: ZaloConfig,
+    article_data: dict,
+    cover_photo_url: str = "",
+    cfg_wp = None,
+) -> ZaloPostResult:
+    wp_svc = None
+    if cfg_wp and cfg_wp.is_valid:
+        from services.wordpress import WordPressService
+        wp_svc = WordPressService(cfg_wp)
+
+    if cover_photo_url and ("localhost" in cover_photo_url or "host.docker.internal" in cover_photo_url or "drive.google.com" in cover_photo_url):
+        if wp_svc:
+            try:
+                logger.info("  → [Zalo] Upload ảnh cover trung gian lên WordPress...")
+                upload_res = wp_svc.upload_image_from_url(cover_photo_url)
+                if upload_res:
+                    cover_photo_url = upload_res[1]
+                else:
+                    logger.warning("  → [Zalo] Upload ảnh cover trung gian thất bại.")
+            except Exception as e:
+                logger.error("  → [Zalo] Lỗi upload ảnh cover trung gian: %s", e)
+
+    # Parse and replace body images
+    content = article_data.get("content_html", "")
+    if content and wp_svc:
+        new_content, _ = wp_svc.upload_and_replace_html_images(content)
+        article_data["content_html"] = new_content
+
+    zalo = ZaloService(cfg_zalo)
+    return zalo.publish_from_article_data(
+        article_data    = article_data,
+        cover_photo_url = cover_photo_url,
     )
 
 # ── Drive article loader helper ───────────────────────────────────────────────
@@ -449,6 +498,7 @@ def _continue_publish(
     publish_all   = platforms == ["blog"]
     should_wp     = publish_all or "wordpress" in platforms
     should_facebook  = cfg.facebook.is_valid and (publish_all or "facebook" in platforms)
+    should_zalo      = cfg.zalo.is_valid and (publish_all or "zalo" in platforms)
 
     if publish_all:
         buffer_platforms = [
@@ -525,7 +575,7 @@ def _continue_publish(
 
     # Khi đăng nhiều sites → tự động rewrite để tránh duplicate content
     # Site đầu tiên dùng bản gốc, các site sau nhận bản rewrite riêng
-    rewrite_count = max(0, len(wp_sites_to_publish) - 1)
+    rewrite_count = max(0, len(wp_sites_to_publish) - 1) if should_wp else 0
 
     if should_wp:
         _STATUS_LABELS = {
@@ -570,44 +620,37 @@ def _continue_publish(
 
     need_captions = should_buffer or should_facebook
     need_rewrite  = rewrite_count > 0
+    need_summary  = True  # Luôn gọi Gemini để lấy SEO Summary
 
     social_texts: dict                        = {}
     social_captions: dict                     = {}
     rewritten_versions: list[tuple[str, str]] = []
+    seo_summary: str                          = ""
+    zalo_cta_text: str                        = ""
 
-    if need_rewrite or need_captions:
+    if need_rewrite or need_captions or need_summary or should_zalo:
         logger.info(
-            "[4/6] Gemini: rewrite=%d bản | captions=%s",
-            rewrite_count, gemini_platforms or "all",
+            "[4/6] Gemini: rewrite=%d bản | captions=%s | summary=%s | cta=%s",
+            rewrite_count, gemini_platforms or "None", need_summary, should_zalo,
         )
-        print(
-            "  ⏳ Gemini đang xử lý"
-            + (f" {rewrite_count} bản rewrite" if need_rewrite else "")
-            + (" captions" if need_captions else "")
-            + "..."
+        print("  ⏳ Gemini đang xử lý (Batch Request)...")
+        
+        rewritten_versions, social_captions, seo_summary, zalo_cta_text = gemini.process_content_batch(
+            original_html  = drive_article.content,
+            topic          = parsed.topic,
+            title          = drive_article.title,
+            rewrite_count  = rewrite_count,
+            platforms      = gemini_platforms if need_captions else None,
+            facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
+            need_summary   = need_summary,
+            need_zalo_cta  = should_zalo,
         )
-        if need_rewrite:
-            rewritten_versions, social_captions = gemini.rewrite_and_caption_batch(
-                original_html  = drive_article.content,
-                topic          = parsed.topic,
-                title          = drive_article.title,
-                rewrite_count  = rewrite_count,
-                platforms      = gemini_platforms if need_captions else None,
-                facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
-            )
-        elif need_captions:
-            social_captions = gemini.generate_social_captions(
-                topic          = parsed.topic,
-                title          = drive_article.title,
-                plain_text     = plain,
-                platforms      = gemini_platforms,
-                facebook_pages = pages_to_post if len(pages_to_post) > 1 else None,
-            )
+
         print("  ✅ Xong")
-        logger.info("  → %d bản rewrite | %d platforms caption",
-                    len(rewritten_versions), len(social_captions))
+        logger.info("  → %d bản rewrite | %d platforms caption | summary: %d chars | cta: %d chars",
+                    len(rewritten_versions), len(social_captions), len(seo_summary), len(zalo_cta_text))
     else:
-        logger.info("[4/6] Bỏ qua Gemini (chỉ đăng WP đơn, không social)")
+        logger.info("[4/6] Bỏ qua Gemini")
 
     if need_captions:
         social_texts = build_social_texts(
@@ -626,13 +669,17 @@ def _continue_publish(
         }
 
     # ── Build (site, article_data) pairs ─────────────────────────────────────
+    final_summary = seo_summary if seo_summary else _extract_first_paragraph(drive_article.content)[:300]
+    
     base_article_data = {
         "seo_title":        drive_article.title,
-        "meta_description": plain[:160],
+        "meta_description": final_summary,
         "focus_keyword":    parsed.topic,
-        "excerpt":          plain[:300],
+        "excerpt":          final_summary,
         "content_html":     _strip_leading_h1(drive_article.content),
         "social_captions":  {},
+        "zalo_cta_text":    zalo_cta_text,
+        "zalo_cta_link":    "https://timchuyenbay.vn/",
     }
 
     site_article_pairs: list[tuple] = []
@@ -666,13 +713,14 @@ def _continue_publish(
     result = PublishResult(file_path=file_path)
 
     # ── Bước 6: Publish song song ─────────────────────────────────────────────
-    logger.info("[6/6] Xuất bản song song (WP=%s | Buffer=%s | FB=%s)...",
-                should_wp, should_buffer, should_facebook)
+    logger.info("[6/6] Xuất bản song song (WP=%s | Buffer=%s | FB=%s | Zalo=%s)...",
+                should_wp, should_buffer, should_facebook, should_zalo)
 
     wp_futures: list[tuple]  = []
     buffer_future            = None
     facebook_future          = None
-    max_workers              = len(wp_sites_to_publish) + 2
+    zalo_future              = None
+    max_workers              = len(wp_sites_to_publish) + 3
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
 
@@ -707,6 +755,16 @@ def _continue_publish(
                 parsed.schedule_time or None,
                 selected_page_ids,
                 facebook_page_texts or None,
+            )
+
+        if should_zalo:
+            zalo_cover = drive_image_urls[0] if drive_image_urls else ""
+            zalo_future = executor.submit(
+                _worker_zalo,
+                cfg.zalo,
+                base_article_data,
+                zalo_cover,
+                cfg.wordpress,
             )
 
         # ── Thu kết quả WP ────────────────────────────────────────────────────
@@ -749,8 +807,21 @@ def _continue_publish(
             except Exception as exc:
                 logger.warning("  → ❌ Facebook thất bại: %s", exc)
 
-    if not should_wp and not should_buffer and not should_facebook:
-        logger.info("  → 💾 Chỉ lưu file (WP/Buffer/Facebook chưa cấu hình)")
+        # ── Thu kết quả Zalo ──────────────────────────────────────────────────
+        if zalo_future is not None:
+            try:
+                zalo_result = zalo_future.result()
+                result.zalo_results = [zalo_result]
+                if zalo_result.status == "success":
+                    logger.info("  → Zalo: ✅ Đăng bài thành công | token=%s",
+                                zalo_result.article_token)
+                else:
+                    logger.warning("  → Zalo: ❌ %s", zalo_result.error)
+            except Exception as exc:
+                logger.warning("  → ❌ Zalo thất bại: %s", exc)
+
+    if not should_wp and not should_buffer and not should_facebook and not should_zalo:
+        logger.info("  → 💾 Chỉ lưu file (WP/Buffer/Facebook/Zalo chưa cấu hình)")
 
     if webhook_url:
         _notify_webhook(webhook_url, drive_article.title, file_path)

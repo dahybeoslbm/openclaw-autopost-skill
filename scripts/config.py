@@ -116,6 +116,22 @@ def _load_fb_pages() -> list[dict]:
         return json.loads(raw)
     except json.JSONDecodeError:
         return []
+
+@dataclass(frozen=True)
+class ZaloConfig:
+    """
+    Config để gọi PHP proxy epZaloPost (đăng bài lên Zalo OA).
+    PHP proxy tự xử lý access_token — Python chỉ cần api_key + app_id.
+    """
+    api_url: str
+    api_key: str
+    app_id:  str
+    timeout: int = 30
+
+    @property
+    def is_valid(self) -> bool:
+        return all([self.api_url, self.api_key, self.app_id])
+
 @dataclass(frozen=True)
 class AppConfig:
     output_dir: str
@@ -128,6 +144,7 @@ class AppConfig:
     buffer: BufferConfig
     googledrive: GoogleDriveAPIConfig
     facebook: FacebookConfig
+    zalo: ZaloConfig
 
 def load_config() -> AppConfig:
     """
@@ -173,4 +190,10 @@ def load_config() -> AppConfig:
             language=os.environ.get("GDRIVE_LANGUAGE", "vi"),
         ),
         facebook=FacebookConfig(pages=_load_fb_pages()),
+        zalo=ZaloConfig(
+            api_url=os.environ.get("ZALO_API_URL", ""),
+            api_key=os.environ.get("ZALO_API_KEY", ""),
+            app_id=os.environ.get("ZALO_APP_ID", ""),
+            timeout=int(os.environ.get("ZALO_TIMEOUT", "30")),
+        ),
     )

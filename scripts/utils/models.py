@@ -48,7 +48,16 @@ class FacebookPostResult:
     error:     str = ""
 
 @dataclass
+class ZaloPostResult:
+    """Kết quả đăng bài viết lên Zalo OA."""
+    app_id:        str
+    status:        str          # "success" | "error"
+    article_token: str = ""
+    error:         str = ""
+
+@dataclass
 class PublishResult:
+
     """Kết quả sau khi xuất bản bài viết."""
     file_path: str
     error: str = ""  
@@ -57,6 +66,7 @@ class PublishResult:
     wp_status: Optional[str] = None
     buffer_results: list["BufferPostResult"] = field(default_factory=list)
     facebook_results: list["FacebookPostResult"] = field(default_factory=list)
+    zalo_results: list["ZaloPostResult"] = field(default_factory=list)
 
     @property
     def posted_to_wp(self) -> bool:
@@ -73,3 +83,7 @@ class PublishResult:
     @property
     def posted_to_facebook(self) -> bool:
         return any(r.status == "success" for r in self.facebook_results)
+
+    @property
+    def posted_to_zalo(self) -> bool:
+        return any(r.status == "success" for r in self.zalo_results)

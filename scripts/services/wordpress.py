@@ -7,6 +7,7 @@ import os
 
 import requests
 import markdown as md
+from bs4 import BeautifulSoup
 
 from config import WordPressConfig
 from utils.logger import get_logger
@@ -110,6 +111,56 @@ class WordPressService:
         except Exception as e:
             logger.error("  → upload_image_from_url error: %s", e)
             return None
+
+    def upload_and_replace_html_images(self, html_content: str) -> tuple[str, int | None]:
+        """
+        Duyệt qua tất cả thẻ <img> trong HTML, upload các link ngoài (Google Drive, v.v.)
+        lên WordPress Media và thay thế thuộc tính src.
+        Trả về HTML đã cập nhật và ID của ảnh đầu tiên được upload thành công (để làm ảnh bìa).
+        """
+        if not html_content:
+            return html_content, None
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        images = soup.find_all("img")
+        if not images:
+            return html_content, None
+
+        wp_base = self._config.site_url.rstrip("/")
+        featured_media_id = None
+        imgs_to_upload = []
+
+        for img in images:
+            src = img.get("src")
+            if not src or src.startswith("data:"):
+                continue
+            if not src.startswith(wp_base) and src.startswith("http"):
+                imgs_to_upload.append((img, src))
+
+        if not imgs_to_upload:
+            return html_content, None
+
+        import concurrent.futures
+        logger.info("  → Upload %d ảnh trung gian lên WordPress...", len(imgs_to_upload))
+
+        def _upload_one(item: tuple) -> tuple | None:
+            img, src = item
+            logger.info("  → Tải ảnh: %s", src[:60])
+            res = self.upload_image_from_url(src)
+            if res:
+                return (img, res[0], res[1])
+            return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            for outcome in ex.map(_upload_one, imgs_to_upload):
+                if outcome:
+                    img, media_id, media_url = outcome
+                    img["src"] = media_url
+                    logger.info("  → ✅ Ảnh → WP Media: %s", media_url)
+                    if not featured_media_id:
+                        featured_media_id = media_id
+
+        return str(soup), featured_media_id
 
     # ── Taxonomy ─────────────────────────────────────────────────────────────
 
@@ -261,36 +312,9 @@ class WordPressService:
                     featured_media_id = media_id
 
         # 2b. Upload ảnh nhúng trong HTML (từ Google Docs API — URL ngoài)
-        import re
-        import concurrent.futures
-
-        img_urls = list(dict.fromkeys(
-            url for url in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_content)
-            if not url.startswith(wp_base)
-            and not url.startswith("data:")
-            and url.startswith("http")
-        ))
-
-        if img_urls:
-            logger.info("  → Upload %d ảnh song song...", len(img_urls))
-
-            def _upload_one(img_url: str) -> tuple[str, int, str] | None:
-                logger.info("  → Phát hiện ảnh ngoài trong HTML: %s", img_url[:60])
-                result = self.upload_image_from_url(img_url)
-                if result:
-                    media_id, media_url = result
-                    logger.info("  → ✅ Ảnh → WP Media: %s", media_url)
-                    return img_url, media_id, media_url
-                logger.warning("  → ⚠️  Không upload được ảnh: %s", img_url[:60])
-                return None
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-                for outcome in ex.map(_upload_one, img_urls):
-                    if outcome:
-                        original_url, media_id, media_url = outcome
-                        html_content = html_content.replace(original_url, media_url)
-                        if not featured_media_id:
-                            featured_media_id = media_id
+        html_content, embedded_featured_id = self.upload_and_replace_html_images(html_content)
+        if embedded_featured_id and not featured_media_id:
+            featured_media_id = embedded_featured_id
 
         # 3. Resolve categories & tags
         category_ids = [
