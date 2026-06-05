@@ -12,6 +12,8 @@ class ParsedRequest:
     topic: str
     platforms: list[str] = field(default_factory=lambda: ["Blog"])
     schedule_time: str = ""
+    preselected_pages: str = ""
+    preselected_wp_sites: str = ""
 
 
 @dataclass

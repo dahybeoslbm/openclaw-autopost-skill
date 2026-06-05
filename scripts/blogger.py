@@ -521,6 +521,58 @@ def _continue_publish(
             url = _img_re.sub(r'https?://localhost(:\d+)?', _actual_base, block["url"])
             drive_image_urls.append(url)
 
+    import re
+    def normalize_name(name: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', name.lower())
+
+    # ── Tự động resolve pre-selection từ NLU ─────────────────────────────────
+    if should_facebook and selected_page_ids is None and parsed.preselected_pages:
+        p_pages = parsed.preselected_pages.strip().lower()
+        if p_pages in _ALL_PAGES_KEYWORDS:
+            selected_page_ids = [pg["id"] for pg in cfg.facebook.pages]
+            print(f"✅ Đã tự động chọn {len(selected_page_ids)} page: {', '.join(pg['name'] for pg in cfg.facebook.pages)}")
+        else:
+            if all(x.isdigit() for x in p_pages.split()):
+                # Resolve by indices
+                raw_indices = [int(x) - 1 for x in p_pages.split()]
+                selected = [cfg.facebook.pages[i] for i in raw_indices if 0 <= i < len(cfg.facebook.pages)]
+            else:
+                # Resolve by string matching
+                norm_p = normalize_name(p_pages)
+                selected = [pg for pg in cfg.facebook.pages if norm_p in normalize_name(pg['name'])]
+                
+            if len(selected) == 1 or (len(selected) > 1 and all(x.isdigit() for x in p_pages.split())):
+                selected_page_ids = [pg["id"] for pg in selected]
+                print(f"✅ Đã tự động chọn {len(selected_page_ids)} page: {', '.join(pg['name'] for pg in selected)}")
+            elif len(selected) > 1:
+                print(f"⚠️ Từ khóa '{p_pages}' khớp với {len(selected)} pages. Vui lòng chọn thủ công để tránh nhầm lẫn.")
+            else:
+                print(f"⚠️ Không tìm thấy page nào khớp với '{p_pages}'. Vui lòng chọn thủ công.")
+
+    valid_wp_sites = [s for s in cfg.wordpress_sites if s.is_valid]
+    if should_wp and selected_wp_site_urls is None and parsed.preselected_wp_sites:
+        p_sites = parsed.preselected_wp_sites.strip().lower()
+        if p_sites in _ALL_PAGES_KEYWORDS:
+            selected_wp_site_urls = [s.site_url for s in valid_wp_sites]
+            print(f"✅ Đã tự động chọn {len(selected_wp_site_urls)} site: {', '.join(selected_wp_site_urls)}")
+        else:
+            if all(x.isdigit() for x in p_sites.split()):
+                # Resolve by indices
+                raw_indices = [int(x) - 1 for x in p_sites.split()]
+                selected = [valid_wp_sites[i] for i in raw_indices if 0 <= i < len(valid_wp_sites)]
+            else:
+                # Resolve by string matching
+                norm_s = normalize_name(p_sites)
+                selected = [s for s in valid_wp_sites if norm_s in normalize_name(s.site_url)]
+                
+            if len(selected) == 1 or (len(selected) > 1 and all(x.isdigit() for x in p_sites.split())):
+                selected_wp_site_urls = [s.site_url for s in selected]
+                print(f"✅ Đã tự động chọn {len(selected_wp_site_urls)} site: {', '.join(selected_wp_site_urls)}")
+            elif len(selected) > 1:
+                print(f"⚠️ Từ khóa '{p_sites}' khớp với {len(selected)} sites. Vui lòng chọn thủ công để tránh nhầm lẫn.")
+            else:
+                print(f"⚠️ Không tìm thấy site nào khớp với '{p_sites}'. Vui lòng chọn thủ công.")
+
     # ── Guard: chọn Facebook pages ────────────────────────────────────────────
     if should_facebook and selected_page_ids is None and len(cfg.facebook.pages) > 1:
         save_pending_pages(cfg.chat_id, PendingPageSelection(
@@ -542,7 +594,6 @@ def _continue_publish(
         return PublishResult(file_path="", error="PENDING_PAGE_SELECTION")
 
     # ── Guard: chọn WordPress sites ───────────────────────────────────────────
-    valid_wp_sites = [s for s in cfg.wordpress_sites if s.is_valid]
     if should_wp and selected_wp_site_urls is None and len(valid_wp_sites) > 1:
         save_pending_wp_sites(cfg.chat_id, PendingWPSiteSelection(
             sites              = [{"url": s.site_url} for s in valid_wp_sites],
@@ -835,7 +886,41 @@ def main():
     user_input  = sys.argv[1] if len(sys.argv) > 1 else "Du lịch Đà Nẵng"
     webhook_url = sys.argv[2] if len(sys.argv) > 2 else None
 
+    chat_id = os.environ.get("CHAT_ID", "default")
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/output")
+    os.makedirs(output_dir, exist_ok=True)
+    start_time_file = os.path.join(output_dir, f".start_time_{chat_id}.txt")
+    
+    p = user_input.strip().lower()
+    is_continuation = p.isdigit() or all(x.isdigit() for x in p.split()) or p in ["tất cả", "tat ca", "tatca", "all", "huỷ", "huy", "cancel", "thôi", "bỏ"]
+    
+    if not is_continuation or not os.path.exists(start_time_file):
+        start_time = time.time()
+        try:
+            with open(start_time_file, "w") as f:
+                f.write(str(start_time))
+        except Exception:
+            pass
+    else:
+        try:
+            with open(start_time_file, "r") as f:
+                start_time = float(f.read().strip())
+        except Exception:
+            start_time = time.time()
+
     result = run(user_input, webhook_url)
+
+    elapsed = time.time() - start_time
+    time_str = f"⏱ Thời gian xử lý: {elapsed:.1f} giây"
+    print(f"\n[AGENT_INSTRUCTION: YOU MUST INCLUDE THIS EXACT TEXT IN YOUR FINAL REPLY: '{time_str}']", flush=True)
+    
+    if hasattr(result, 'file_path') and result.file_path:
+        time_file = result.file_path.replace(".md", ".time")
+        try:
+            with open(time_file, "w", encoding="utf-8") as f:
+                f.write(time_str)
+        except Exception:
+            pass
 
     if result.error and result.error not in _NON_ERROR_STATES:
         logger.error("Lỗi: %s", result.error)

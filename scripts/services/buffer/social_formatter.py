@@ -85,6 +85,15 @@ def for_google_business(caption: str, url: str) -> dict:
     return {"text": text.strip()}
 
 
+def _get_str(sc: dict, key: str, fallback: str) -> str:
+    val = sc.get(key)
+    if not val:
+        return fallback
+    if isinstance(val, list):
+        return str(val[0]) if val else fallback
+    return str(val)
+
+
 def build_all(
     topic: str,
     title: str,
@@ -100,18 +109,14 @@ def build_all(
     fallback = excerpt or title
 
     return {
-        "facebook": for_facebook(
-            sc.get("facebook", fallback) if not isinstance(sc.get("facebook"), list)
-            else (sc["facebook"][0] if sc["facebook"] else fallback),
-            wp_url
-        ),
-        "instagram":      for_instagram(sc.get("instagram", fallback)),
-        "twitter":        for_twitter(sc.get("twitter", title), wp_url),
-        "threads":        for_threads(sc.get("threads", fallback), wp_url),
-        "tiktok":         for_tiktok(sc.get("tiktok", fallback)),
-        "linkedin":       for_linkedin(sc.get("linkedin", fallback), wp_url),
-        "pinterest":      for_pinterest(sc.get("pinterest", fallback), wp_url),
-        "bluesky":        for_bluesky(sc.get("bluesky", title)),
-        "mastodon":       for_mastodon(sc.get("mastodon", fallback), wp_url),
-        "google_business":for_google_business(sc.get("google_business", fallback), wp_url),
+        "facebook":       for_facebook(_get_str(sc, "facebook", fallback), wp_url),
+        "instagram":      for_instagram(_get_str(sc, "instagram", fallback)),
+        "twitter":        for_twitter(_get_str(sc, "twitter", title), wp_url),
+        "threads":        for_threads(_get_str(sc, "threads", fallback), wp_url),
+        "tiktok":         for_tiktok(_get_str(sc, "tiktok", fallback)),
+        "linkedin":       for_linkedin(_get_str(sc, "linkedin", fallback), wp_url),
+        "pinterest":      for_pinterest(_get_str(sc, "pinterest", fallback), wp_url),
+        "bluesky":        for_bluesky(_get_str(sc, "bluesky", title)),
+        "mastodon":       for_mastodon(_get_str(sc, "mastodon", fallback), wp_url),
+        "google_business":for_google_business(_get_str(sc, "google_business", fallback), wp_url),
     }
