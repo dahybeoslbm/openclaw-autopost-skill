@@ -26,6 +26,7 @@ _PLATFORM_KEYWORDS: dict[str, list[str]] = {
     "pinterest":      ["pinterest"],
     "mastodon":       ["mastodon"],
     "google_business":["google business", "google my business"],
+    "zalo":           ["zalo"],
     "blog":           [],  # default — không khớp gì hết
 }
 
@@ -190,7 +191,7 @@ def _detect_topic(text: str, original: str) -> str:
     _PLT = (
         r"wordpress|wp|facebook|fb|instagram|ig|tiktok|tik\s+tok|"
         r"threads|twitter|x\.com|linkedin|youtube|yt|bluesky|blue\s+sky|"
-        r"pinterest|mastodon|google\s+business|google\s+my\s+business"
+        r"pinterest|mastodon|google\s+business|google\s+my\s+business|zalo"
     )
     # "đăng lên facebook", "post trên instagram"
     s = re.sub(rf"\b(?:đăng|post|lên|trên|qua|lên\s+trang)\s+(?:{_PLT})\b", " ", s, flags=re.IGNORECASE)
@@ -221,23 +222,72 @@ def _detect_topic(text: str, original: str) -> str:
     return s if len(s) >= 2 else original[:50]
 
 
+def _detect_preselection(text: str) -> tuple[str, str, str, str]:
+    """
+    Extract inline selections for facebook pages and wp sites.
+    Returns (pages_sel, wp_sel, fb_full_match, wp_full_match)
+    """
+    pages_sel = ""
+    wp_sel = ""
+    fb_full = ""
+    wp_full = ""
+    
+    # Split the text by connector words to isolate clauses
+    clauses = re.split(r'\b(?:và|hoặc|hay)\b', text)
+    
+    for clause in clauses:
+        fb_m = re.search(r"\b(tất cả(?: các)?\s+)?(?:page(?:s)?\s+)?(?:facebook|fb)\s*(?:page(?:s)?)?(?:\s+(.+?))?$", clause, re.IGNORECASE)
+        if fb_m:
+            prefix = (fb_m.group(1) or "").strip()
+            suffix = (fb_m.group(2) or "").strip()
+            if "tất cả" in prefix.lower() or "tất cả" in suffix.lower():
+                pages_sel = "tất cả"
+            else:
+                pages_sel = suffix
+            pages_sel = re.sub(r'\b(?:lên|trên)$', '', pages_sel).strip()
+            if not fb_full:
+                fb_full = fb_m.group(0).strip()
+            
+        wp_m = re.search(r"\b(tất cả(?: các)?\s+)?(?:site(?:s)?\s+)?(?:wordpress|wp)\s*(?:site(?:s)?)?(?:\s+(.+?))?$", clause, re.IGNORECASE)
+        if wp_m:
+            prefix = (wp_m.group(1) or "").strip()
+            suffix = (wp_m.group(2) or "").strip()
+            if "tất cả" in prefix.lower() or "tất cả" in suffix.lower():
+                wp_sel = "tất cả"
+            else:
+                wp_sel = suffix
+            wp_sel = re.sub(r'\b(?:lên|trên)$', '', wp_sel).strip()
+            if not wp_full:
+                wp_full = wp_m.group(0).strip()
+
+    return pages_sel, wp_sel, fb_full, wp_full
+
 def parse_request(user_prompt: str) -> ParsedRequest:
     """
     Phân tích câu lệnh tự nhiên thành ParsedRequest.
-    Input : "Viết bài review về Đà Lạt, đăng lên WordPress lúc ngày mai"
-    Output: ParsedRequest(topic="đà lạt", platform="Wordpress", schedule_time="Ngày mai")
     """
     logger.info("[1/6] Phân tích yêu cầu (NLU)...")
     lower = user_prompt.lower()
 
+    pages_sel, wp_sel, fb_full, wp_full = _detect_preselection(lower)
+    
+    # Remove the preselection chunks so they don't pollute the topic
+    topic_cleaner = lower
+    if fb_full:
+        topic_cleaner = topic_cleaner.replace(fb_full, " facebook ")
+    if wp_full:
+        topic_cleaner = topic_cleaner.replace(wp_full, " wordpress ")
+
     result = ParsedRequest(
-        topic=_detect_topic(lower, user_prompt),
+        topic=_detect_topic(topic_cleaner, user_prompt),
         platforms=_detect_platforms(lower),
         schedule_time=_detect_schedule(lower),
+        preselected_pages=pages_sel,
+        preselected_wp_sites=wp_sel,
     )
 
     logger.info(
-        "  → Topic='%s' | Platform='%s' | Schedule='%s'",
-        result.topic, result.platforms, result.schedule_time
+        "  → Topic='%s' | Platform='%s' | Schedule='%s' | FB_Pages='%s' | WP_Sites='%s'",
+        result.topic, result.platforms, result.schedule_time, result.preselected_pages, result.preselected_wp_sites
     )
     return result

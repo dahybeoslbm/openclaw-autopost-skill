@@ -253,7 +253,7 @@ Chỉ trả về các key sau, không thêm key khác:
 
     # ── Batch: rewrite N bản + captions trong 1 request ──────────────────────
 
-    def rewrite_and_caption_batch(
+    def process_content_batch(
         self,
         original_html: str,
         topic: str,
@@ -261,26 +261,34 @@ Chỉ trả về các key sau, không thêm key khác:
         rewrite_count: int,
         platforms: list[str] | None = None,
         facebook_pages: list[dict] | None = None,
-    ) -> tuple[list[tuple[str, str]], dict]:
+        need_summary: bool = True,
+        need_zalo_cta: bool = True,
+    ) -> tuple[list[tuple[str, str]], dict, str, str]:
         """
-        Gộp rewrite N bản unique + social captions vào 1 Gemini request.
+        Gộp rewrite N bản unique + social captions + SEO summary vào 1 Gemini request.
 
         Args:
             original_html:  HTML gốc từ Google Drive
             topic:          Chủ đề bài viết
             title:          Tiêu đề gốc
-            rewrite_count:  Số bản cần viết lại (0 = chỉ gen captions)
+            rewrite_count:  Số bản cần viết lại (0 = chỉ gen captions/summary)
             platforms:      Danh sách platform cần gen caption (None = bỏ qua captions)
             facebook_pages: Danh sách FB pages để gen caption riêng từng page
+            need_summary:   Có sinh đoạn tóm tắt 260-280 ký tự hay không
+            need_zalo_cta:  Có sinh Call to Action cho Zalo OA không
 
         Returns:
             rewrites: [(html, title), ...] — rewrite_count phần tử (rỗng nếu rewrite_count=0)
             captions: dict social captions
+            summary:  chuỗi tóm tắt
+            zalo_cta: chuỗi call to action (dưới 50 ký tự)
         """
         plain = _re.sub(r"<[^>]+>", " ", original_html).strip()
 
         fallback_rewrites = [(original_html, title)] * rewrite_count
         fallback_captions: dict = {}
+        fallback_summary = ""
+        fallback_zalo_cta = ""
 
         # ── Build phần rewrite ────────────────────────────────────────────────
         rewrite_section = ""
@@ -317,6 +325,26 @@ NHIỆM VỤ 2 — SOCIAL CAPTIONS
 {caption_prompt}
 """
 
+        # ── Build phần summary ────────────────────────────────────────────────
+        summary_section = ""
+        if need_summary:
+            summary_section = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NHIỆM VỤ 3 — SEO SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Viết 1 đoạn tóm tắt SEO dài từ 260-280 ký tự, mượt mà, bao quát toàn bộ nội dung gốc để làm subtitle. LƯU Ý: Đây là bài viết của đại lý vé máy bay "Tìm Chuyến Bay", hãy khéo léo lồng ghép tên thương hiệu "Tìm Chuyến Bay" vào tóm tắt thay vì dùng các từ chung chung như "đại lý uy tín". KHÔNG dùng markdown.
+"""
+
+        # ── Build phần CTA ────────────────────────────────────────────────────
+        cta_section = ""
+        if need_zalo_cta:
+            cta_section = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NHIỆM VỤ 4 — CALL TO ACTION (ZALO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Viết 1 câu Call To Action (Kêu gọi hành động) siêu ngắn gọn, hấp dẫn, liên quan trực tiếp đến bài viết. Yêu cầu: BẮT BUỘC dưới 50 ký tự, mang tính thúc giục người dùng bấm vào link để săn vé/đặt vé. KHÔNG dùng markdown.
+"""
+
         # ── Build JSON schema ─────────────────────────────────────────────────
         rewrites_schema = ""
         if rewrite_count > 0:
@@ -324,23 +352,39 @@ NHIỆM VỤ 2 — SOCIAL CAPTIONS
   "rewrites": [
     {"title": "Tiêu đề bản 1", "html": "<h1>...</h1><p>...</p>"},
     {"title": "Tiêu đề bản 2", "html": "<h1>...</h1><p>...</p>"}
-  ],"""
+  ]"""
 
         captions_schema = ""
         if platforms:
-            captions_schema = """
-  "captions": {
+            prefix = "," if rewrite_count > 0 else ""
+            captions_schema = f"""{prefix}
+  "captions": {{
     "facebook": "...",
     "instagram": "..."
-  }"""
+  }}"""
+
+        summary_schema = ""
+        if need_summary:
+            prefix = "," if (rewrite_count > 0 or platforms) else ""
+            summary_schema = f"""{prefix}
+  "summary": "Đoạn tóm tắt 260-280 ký tự..."
+"""
+
+        cta_schema = ""
+        if need_zalo_cta:
+            prefix = "," if (rewrite_count > 0 or platforms or need_summary) else ""
+            cta_schema = f"""{prefix}
+  "zalo_cta": "Câu kêu gọi hành động dưới 50 ký tự..."
+"""
 
         prompt = f"""
 Bạn là chuyên gia SEO content. CHỦ ĐỀ: {topic} | TIÊU ĐỀ GỐC: {title}
 {rewrite_section}
 {caption_section}
+{summary_section}
+{cta_section}
 Trả về JSON hợp lệ duy nhất, không markdown, không giải thích:
-{{{rewrites_schema}{captions_schema}
-}}
+{{{rewrites_schema}{captions_schema}{summary_schema}{cta_schema}}}
 """.strip()
 
         raw = self.generate(prompt, max_retries=2)
@@ -368,8 +412,14 @@ Trả về JSON hợp lệ duy nhất, không markdown, không giải thích:
                     data.get("captions", {}), facebook_pages
                 )
 
-            return rewrites, captions
+            # Parse summary
+            summary = data.get("summary", "") if need_summary else ""
+
+            # Parse cta
+            zalo_cta = data.get("zalo_cta", "") if need_zalo_cta else ""
+
+            return rewrites, captions, summary, zalo_cta
 
         except Exception as e:
-            logger.warning("  → Parse rewrite+caption batch thất bại: %s — dùng fallback", e)
-            return fallback_rewrites, fallback_captions
+            logger.warning("  → Parse batch thất bại: %s — dùng fallback", e)
+            return fallback_rewrites, fallback_captions, fallback_summary, fallback_zalo_cta
