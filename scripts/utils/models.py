@@ -63,6 +63,7 @@ class PublishResult:
     """Kết quả sau khi xuất bản bài viết."""
     file_path: str
     error: str = ""  
+    prompt_msg: str = ""
     wp_post_id: Optional[int] = None
     wp_post_url: Optional[str] = None
     wp_status: Optional[str] = None

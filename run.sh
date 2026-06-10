@@ -16,10 +16,30 @@
 
 set -euo pipefail
 
-CONTAINER_NAME="auto-travel-blogger"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONTAINER_NAME="auto-travel-blogger"
 PYTHON_CMD="python /app/scripts/blogger.py"
-# CHAT_ID được truyền vào từ env (do caller set), forward vào docker exec
+
+# ── Tự động lấy CHAT_ID từ OpenClaw ──────────────────────────────────────────
+if [[ -z "${CHAT_ID:-}" && -f /tmp/openclaw_current_sender ]]; then
+    CHAT_ID=$(cat /tmp/openclaw_current_sender)
+    export CHAT_ID
+fi
+
+# ── Wrapper chạy ngầm (chống Timeout Telegram) ───────────────────────────────
+# Nếu không phải các cờ hệ thống, tự động fork tiến trình chạy nền
+if [[ "${1:-}" != "--internal-run" && "${1:-}" != "--start" && "${1:-}" != "--stop" && "${1:-}" != "--status" && "${1:-}" != "--rebuild" ]]; then
+    echo "⏳ Đã tiếp nhận yêu cầu. Hệ thống đang làm việc ngầm, khi nào xong tôi sẽ báo lại nhé!"
+    LOG_FILE="$SCRIPT_DIR/logs/blogger_$(date +%Y%m%d_%H%M%S)_$$.log"
+    nohup "$0" --internal-run "$@" > "$LOG_FILE" 2>&1 &
+    echo "📋 Log: $LOG_FILE" >&2
+    exit 0
+fi
+
+if [[ "${1:-}" == "--internal-run" ]]; then
+    shift
+fi
+
 CHAT_ID_FLAG=""  
 [[ -n "${CHAT_ID:-}" ]] && CHAT_ID_FLAG="-e CHAT_ID=${CHAT_ID}"
 
@@ -83,13 +103,11 @@ if [[ $# -eq 0 ]]; then
     exit 1
 fi
 
-USER_CMD="$1"
-
 # ── Thử docker exec (fast path) ───────────────────────────────────────────────
 
 if is_running; then
     # Container sẵn sàng → exec ngay, không overhead
-    docker exec -i $CHAT_ID_FLAG "$CONTAINER_NAME" $PYTHON_CMD "$USER_CMD"
+    docker exec -i $CHAT_ID_FLAG "$CONTAINER_NAME" $PYTHON_CMD "$@"
     exit $?
 fi
 
@@ -98,11 +116,11 @@ fi
 echo "⚡ Container chưa chạy. Đang khởi động daemon lần đầu..." >&2
 
 if start_daemon; then
-    docker exec -i $CHAT_ID_FLAG "$CONTAINER_NAME" $PYTHON_CMD "$USER_CMD"
+    docker exec -i $CHAT_ID_FLAG "$CONTAINER_NAME" $PYTHON_CMD "$@"
     exit $?
 fi
 
 # ── Fallback: one-shot run (chậm nhất, chỉ dùng khi daemon lỗi) ──────────────
 
 echo "⚠️  Fallback: dùng docker compose run (chậm hơn)..." >&2
-(cd "$SCRIPT_DIR" && docker compose run --rm auto-travel-blogger-run "$USER_CMD")
+(cd "$SCRIPT_DIR" && docker compose run --rm auto-travel-blogger-run "$@")

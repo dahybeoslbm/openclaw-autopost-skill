@@ -91,29 +91,43 @@ def save_pending(chat_id: str, topic: str, pending: PendingSelection) -> None:
 
 
 def load_any_pending(chat_id: str) -> PendingSelection | None:
-    """Tìm bất kỳ pending selection còn hạn, ưu tiên cái mới nhất."""
+    """Tìm bất kỳ pending selection còn hạn, ưu tiên cái mới nhất.
+    Fallback: quét toàn bộ DB nếu không tìm thấy theo chat_id (xử lý CHAT_ID mismatch).
+    """
     now = int(time.time())
     with _get_conn() as conn:
         rows = conn.execute(
-            "SELECT payload FROM selection_cache WHERE expires_at > ? ORDER BY expires_at DESC LIMIT 1",
+            "SELECT payload FROM selection_cache WHERE expires_at > ? ORDER BY expires_at DESC",
             (now,),
         ).fetchall()
     if not rows:
         return None
-    data = json.loads(rows[0][0])
-    # Chỉ trả về nếu đây là article selection (không có _type)
-    if "_type" in data:
-        return None
-    return PendingSelection(
-        candidates=data["candidates"],
-        platform=data["platform"],
-        schedule=data["schedule"],
-        topic=data["topic"],
-    )
+    for row in rows:
+        data = json.loads(row[0])
+        # Chỉ trả về nếu đây là article selection (không có _type)
+        if "_type" not in data:
+            return PendingSelection(
+                candidates=data["candidates"],
+                platform=data["platform"],
+                schedule=data["schedule"],
+                topic=data["topic"],
+            )
+    return None
 
 
 def delete_pending(chat_id: str, topic: str) -> None:
     _delete(_make_key(chat_id + ":", topic.strip().lower()))
+    # Fallback: xoá tất cả article selection còn lại (tránh stale data)
+    now = int(time.time())
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT cache_key, payload FROM selection_cache WHERE expires_at > ?", (now,)
+        ).fetchall()
+        for key, payload in rows:
+            data = json.loads(payload)
+            if "_type" not in data and data.get("topic", "").strip().lower() == topic.strip().lower():
+                conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
+        conn.commit()
 
 
 def delete_all_pending() -> None:
@@ -163,7 +177,21 @@ def save_pending_pages(chat_id: str, pending: PendingPageSelection) -> None:
 
 
 def load_pending_pages(chat_id: str) -> PendingPageSelection | None:
+    # Thử exact key trước
     data = _load(_make_key(_PAGE_KEY_PREFIX, chat_id))
+    if not data:
+        # Fallback: quét toàn bộ DB (xử lý CHAT_ID mismatch)
+        now = int(time.time())
+        with _get_conn() as conn:
+            rows = conn.execute(
+                "SELECT payload FROM selection_cache WHERE expires_at > ? ORDER BY expires_at DESC",
+                (now,),
+            ).fetchall()
+        for row in rows:
+            d = json.loads(row[0])
+            if d.get("_type") == "page_selection":
+                data = d
+                break
     if not data or data.get("_type") != "page_selection":
         return None
     return PendingPageSelection(
@@ -216,7 +244,21 @@ def save_pending_wp_sites(chat_id: str, pending: PendingWPSiteSelection) -> None
 
 
 def load_pending_wp_sites(chat_id: str) -> PendingWPSiteSelection | None:
+    # Thử exact key trước
     data = _load(_make_key(_WP_SITE_KEY_PREFIX, chat_id))
+    if not data:
+        # Fallback: quét toàn bộ DB (xử lý CHAT_ID mismatch)
+        now = int(time.time())
+        with _get_conn() as conn:
+            rows = conn.execute(
+                "SELECT payload FROM selection_cache WHERE expires_at > ? ORDER BY expires_at DESC",
+                (now,),
+            ).fetchall()
+        for row in rows:
+            d = json.loads(row[0])
+            if d.get("_type") == "wp_site_selection":
+                data = d
+                break
     if not data or data.get("_type") != "wp_site_selection":
         return None
     return PendingWPSiteSelection(
