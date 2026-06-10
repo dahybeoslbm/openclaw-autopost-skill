@@ -18,6 +18,9 @@ from urllib.parse import urlparse as _urlparse
 import requests
 from bs4 import BeautifulSoup
 
+import argparse
+from utils.parser import _detect_schedule, _detect_preselection
+
 from config import FacebookConfig, ZaloConfig, load_config
 from services.facebook import FacebookService
 from services.zalo import ZaloService
@@ -294,7 +297,7 @@ def _load_drive_article(
 
 # ── Main run loop ─────────────────────────────────────────────────────────────
 
-def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
+def run(user_prompt: str, webhook_url: str | None = None, parsed_override: ParsedRequest | None = None) -> PublishResult:
     cfg           = load_config()
     gemini        = GeminiService(cfg.gemini, ollama_config=cfg.ollama)
     drive_service = GoogleDriveService.from_config(cfg.googledrive)
@@ -326,8 +329,9 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
                     if 0 <= i < len(pending_pages.pages)
                 ]
                 if not selected:
-                    print(f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending_pages.pages)}.")
-                    return PublishResult(file_path="", error="INVALID_PAGE_CHOICE")
+                    msg = f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending_pages.pages)}."
+                    print(msg)
+                    return PublishResult(file_path="", error="INVALID_PAGE_CHOICE", prompt_msg=msg)
                 selected_ids = [pg["id"] for pg in selected]
 
             print(f"✅ Đã chọn {len(selected_ids)} page: {', '.join(pg['name'] for pg in pending_pages.pages if pg['id'] in selected_ids)}")
@@ -363,8 +367,9 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
                 selected = [pending_wp.sites[i] for i in raw_indices
                             if 0 <= i < len(pending_wp.sites)]
                 if not selected:
-                    print(f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending_wp.sites)}.")
-                    return PublishResult(file_path="", error="INVALID_WP_SITE_CHOICE")
+                    msg = f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending_wp.sites)}."
+                    print(msg)
+                    return PublishResult(file_path="", error="INVALID_WP_SITE_CHOICE", prompt_msg=msg)
                 selected_urls = [s["url"] for s in selected]
 
             print(f"✅ Đã chọn {len(selected_urls)} site: {', '.join(selected_urls)}")
@@ -394,15 +399,14 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         pending = load_any_pending(cfg.chat_id)
 
         if not pending:
-            print(
-                "⚠️  Không tìm thấy phiên chọn bài nào còn hạn (TTL 24h).\n"
-                "Vui lòng gõ lại yêu cầu đăng bài từ đầu."
-            )
-            return PublishResult(file_path="", error="NO_PENDING_SELECTION")
+            msg = "⚠️  Không tìm thấy phiên chọn bài nào còn hạn (TTL 24h).\nVui lòng gõ lại yêu cầu đăng bài từ đầu."
+            print(msg)
+            return PublishResult(file_path="", error="NO_PENDING_SELECTION", prompt_msg=msg)
 
         if choice < 1 or choice > len(pending.candidates):
-            print(f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending.candidates)}.")
-            return PublishResult(file_path="", error="INVALID_CHOICE")
+            msg = f"⚠️  Số không hợp lệ. Vui lòng chọn từ 1 đến {len(pending.candidates)}."
+            print(msg)
+            return PublishResult(file_path="", error="INVALID_CHOICE", prompt_msg=msg)
 
         selected    = pending.candidates[choice - 1]
         document_id = selected["document_id"]
@@ -423,7 +427,7 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
         return _continue_publish(cfg, gemini, result, parsed, webhook_url)
 
     # ── LƯỢT 1: Parse prompt mới ──────────────────────────────────────────────
-    parsed = parse_request(user_prompt)
+    parsed = parsed_override if parsed_override else parse_request(user_prompt)
 
     if not cfg.googledrive.is_valid:
         return PublishResult(file_path="", error="❌ GDRIVE_API_URL chưa cấu hình.")
@@ -467,8 +471,9 @@ def run(user_prompt: str, webhook_url: str | None = None) -> PublishResult:
     lines.append("→ Trả lời số thứ tự để chọn bài muốn đăng.")
     lines.append("  (Gõ 'huỷ' để bỏ qua)")
 
-    print("\n".join(lines))
-    return PublishResult(file_path="", error="PENDING_SELECTION")
+    msg = "\n".join(lines)
+    print(msg)
+    return PublishResult(file_path="", error="PENDING_SELECTION", prompt_msg=msg)
 
 
 # ── Core publish pipeline ─────────────────────────────────────────────────────
@@ -590,8 +595,9 @@ def _continue_publish(
             lines.append(f"  {i+1}. {pg['name']}")
         lines.append("→ Nhập số thứ tự (vd: '1 3'), hoặc 'tất cả' để đăng hết.")
         lines.append("  (Gõ 'huỷ' để bỏ qua)")
-        print("\n".join(lines))
-        return PublishResult(file_path="", error="PENDING_PAGE_SELECTION")
+        msg = "\n".join(lines)
+        print(msg)
+        return PublishResult(file_path="", error="PENDING_PAGE_SELECTION", prompt_msg=msg)
 
     # ── Guard: chọn WordPress sites ───────────────────────────────────────────
     if should_wp and selected_wp_site_urls is None and len(valid_wp_sites) > 1:
@@ -610,8 +616,9 @@ def _continue_publish(
             lines.append(f"  {i+1}. {s.site_url}")
         lines.append("→ Nhập số thứ tự (vd: '1 2') hoặc 'tất cả'.")
         lines.append("  (Gõ 'huỷ' để bỏ qua)")
-        print("\n".join(lines))
-        return PublishResult(file_path="", error="PENDING_WP_SITE_SELECTION")
+        msg = "\n".join(lines)
+        print(msg)
+        return PublishResult(file_path="", error="PENDING_WP_SITE_SELECTION", prompt_msg=msg)
 
     # ── Xác định sites thực tế sẽ publish ────────────────────────────────────
     wp_sites_to_publish = (
@@ -650,8 +657,9 @@ def _continue_publish(
                 )
 
         if all_duplicates:
-            print("\n".join(["⛔ Phát hiện bài viết trùng lặp:"] + all_duplicates))
-            return PublishResult(file_path="", error="DUPLICATE_POST")
+            msg = "\n".join(["⛔ Phát hiện bài viết trùng lặp:"] + all_duplicates)
+            print(msg)
+            return PublishResult(file_path="", error="DUPLICATE_POST", prompt_msg=msg)
     
     # ── Bước 4: Gemini — rewrite + captions trong 1 request ──────────────────
     plain = drive_article.plain_text()
@@ -883,8 +891,53 @@ def _continue_publish(
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    user_input  = sys.argv[1] if len(sys.argv) > 1 else "Du lịch Đà Nẵng"
-    webhook_url = sys.argv[2] if len(sys.argv) > 2 else None
+
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('user_prompt', nargs='*', default=[])
+    parser.add_argument('--topic', type=str, default="")
+    parser.add_argument('--platform', type=str, default="")
+    parser.add_argument('--time', type=str, default="")
+    # Tham số preselection rõ ràng — Agent truyền thẳng không qua Regex
+    parser.add_argument('--pages', type=str, default="",
+                        help="Preselect Facebook pages: 'all', '1', '1 2', or page name")
+    parser.add_argument('--wp-site', type=str, default="",
+                        help="Preselect WP site URL or 'all'")
+    args, unknown = parser.parse_known_args()
+
+    user_input = " ".join(args.user_prompt) if args.user_prompt else ""
+    if not user_input and not args.topic:
+        user_input = "Du lịch Đà Nẵng"
+
+    parsed_override = None
+    if args.topic:
+        # Ưu tiên tham số rõ ràng (--pages, --wp-site), fallback sang Regex từ prompt gốc
+        original_prompt = " ".join(args.user_prompt) if args.user_prompt else ""
+        pages_sel_regex, wp_sel_regex, _, _ = _detect_preselection(original_prompt) if original_prompt else ("", "", "", "")
+        pages_sel = args.pages or pages_sel_regex
+        wp_sel = args.wp_site or wp_sel_regex
+        
+        user_input = args.topic
+        plts = [x.strip().lower() for x in args.platform.split(',')] if args.platform else ["blog"]
+        
+        schedule = ""
+        if args.time:
+            import re
+            # Nếu truyền sẵn chuẩn ISO thì dùng luôn, khỏi parse
+            if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", args.time):
+                schedule = args.time
+            else:
+                schedule = _detect_schedule(args.time)
+
+        parsed_override = ParsedRequest(
+            topic=args.topic,
+            platforms=plts,
+            schedule_time=schedule,
+            preselected_pages=pages_sel,
+            preselected_wp_sites=wp_sel
+        )
+
+    webhook_url = None
 
     chat_id = os.environ.get("CHAT_ID", "default")
     output_dir = os.environ.get("OUTPUT_DIR", "/app/output")
@@ -893,6 +946,25 @@ def main():
     
     p = user_input.strip().lower()
     is_continuation = p.isdigit() or all(x.isdigit() for x in p.split()) or p in ["tất cả", "tat ca", "tatca", "all", "huỷ", "huy", "cancel", "thôi", "bỏ"]
+
+    # ── Luôn detect preselection từ câu gốc nếu parsed_override chưa có ────────
+    # Áp dụng kể cả khi Agent không truyền --pages/--wp-site
+    if not is_continuation:
+        full_text = " ".join(args.user_prompt) if args.user_prompt else user_input
+        pages_from_prompt, wp_from_prompt, _, _ = _detect_preselection(full_text.lower())
+        if parsed_override is None:
+            # Không có --topic flag: tạo ParsedRequest tối thiểu chỉ với preselection
+            parsed_override = ParsedRequest(
+                topic=user_input,
+                preselected_pages=args.pages or pages_from_prompt,
+                preselected_wp_sites=args.wp_site or wp_from_prompt,
+            )
+        else:
+            # Có --topic flag nhưng Agent quên --pages: bổ sung từ regex
+            if not parsed_override.preselected_pages:
+                parsed_override.preselected_pages = args.pages or pages_from_prompt
+            if not parsed_override.preselected_wp_sites:
+                parsed_override.preselected_wp_sites = args.wp_site or wp_from_prompt
     
     if not is_continuation or not os.path.exists(start_time_file):
         start_time = time.time()
@@ -908,7 +980,7 @@ def main():
         except Exception:
             start_time = time.time()
 
-    result = run(user_input, webhook_url)
+    result = run(user_input, webhook_url, parsed_override=parsed_override)
 
     elapsed = time.time() - start_time
     time_str = f"⏱ Thời gian xử lý: {elapsed:.1f} giây"
@@ -924,10 +996,65 @@ def main():
 
     if result.error and result.error not in _NON_ERROR_STATES:
         logger.error("Lỗi: %s", result.error)
+        
+        tele_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        if tele_token and chat_id and chat_id != "default":
+            import requests
+            msg = f"❌ Lỗi xử lý bài '{user_input}':\n{result.error}"
+            
+            # Thêm debug info để kiểm tra NLU
+            if parsed_override:
+                msg += "\n\n🛠 **[NLU Debug - Trích xuất từ OpenClaw]**"
+                msg += f"\n- Topic: {parsed_override.topic}"
+                msg += f"\n- Platform: {', '.join(parsed_override.platforms)}"
+                msg += f"\n- Time (ISO): {parsed_override.schedule_time if parsed_override.schedule_time else 'Đăng ngay'}"
+
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{tele_token}/sendMessage",
+                    json={"chat_id": chat_id, "text": msg},
+                    timeout=5
+                )
+            except Exception:
+                pass
         sys.exit(1)
 
     if result.posted_to_wp:
         logger.info("WP URL: %s", result.wp_post_url)
+        
+    # Gửi thông báo Telegram (vì chạy ngầm)
+    tele_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if tele_token and chat_id and chat_id != "default":
+        import requests
+        
+        if result.prompt_msg:
+            # Nếu có thông báo nhắc (Prompt) -> gửi thẳng prompt cho user
+            msg = result.prompt_msg
+        elif is_continuation and not result.posted_to_wp and not result.posted_to_facebook and not result.posted_to_buffer:
+            # Chưa đăng được đâu (huỷ hoặc lựa chọn trung gian)
+            if "huỷ" in p or "huy" in p or "cancel" in p or "thôi" in p:
+                msg = f"❌ Đã huỷ yêu cầu.\n{time_str}"
+            else:
+                msg = f"⏳ Đã xử lý lựa chọn: {user_input}\n{time_str}"
+        else:
+            msg = f"✅ Đăng thành công: {user_input}\n"
+            if result.wp_post_url:
+                msg += f"🌐 WP: {result.wp_post_url}\n"
+            if result.facebook_results:
+                ok = [r.page_name for r in result.facebook_results if r.status == "success"]
+                if ok:
+                    msg += f"👤 FB: {', '.join(ok)}\n"
+            msg += time_str
+            
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{tele_token}/sendMessage",
+                json={"chat_id": chat_id, "text": msg},
+                timeout=5
+            )
+        except Exception as e:
+            logger.warning("Không thể gửi Telegram webhook: %s", e)
+
     sys.exit(0)
 
 
