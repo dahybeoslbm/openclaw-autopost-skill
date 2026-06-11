@@ -1,6 +1,7 @@
 #!/bin/bash
 NEW_ID=$1
-ENV_FILE="/Users/itdev/.openclaw/workspace/skills/auto-travel-blogger/.env"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../.env"
 
 if [ -z "$NEW_ID" ]; then
   echo "Usage: ./add_chat_id.sh <telegram_user_id>"
