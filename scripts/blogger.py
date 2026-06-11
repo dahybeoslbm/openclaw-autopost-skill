@@ -1031,20 +1031,36 @@ def main():
         if result.prompt_msg:
             # Nếu có thông báo nhắc (Prompt) -> gửi thẳng prompt cho user
             msg = result.prompt_msg
-        elif is_continuation and not result.posted_to_wp and not result.posted_to_facebook and not result.posted_to_buffer:
+        elif is_continuation and not result.posted_to_wp and not result.posted_to_facebook and not result.posted_to_buffer and not result.zalo_results:
             # Chưa đăng được đâu (huỷ hoặc lựa chọn trung gian)
             if "huỷ" in p or "huy" in p or "cancel" in p or "thôi" in p:
                 msg = f"❌ Đã huỷ yêu cầu.\n{time_str}"
             else:
                 msg = f"⏳ Đã xử lý lựa chọn: {user_input}\n{time_str}"
         else:
-            msg = f"✅ Đăng thành công: {user_input}\n"
-            if result.wp_post_url:
+            msg = f"✅ Đã chạy lệnh: {user_input}\n"
+            
+            if getattr(result, "wp_post_url", None):
                 msg += f"🌐 WP: {result.wp_post_url}\n"
-            if result.facebook_results:
+                
+            if getattr(result, "facebook_results", []):
                 ok = [r.page_name for r in result.facebook_results if r.status == "success"]
-                if ok:
-                    msg += f"👤 FB: {', '.join(ok)}\n"
+                errs = [f"{r.page_name}: {r.error}" for r in result.facebook_results if r.status == "error"]
+                if ok: msg += f"👤 FB OK: {', '.join(ok)}\n"
+                if errs: msg += f"❌ FB Lỗi: {'; '.join(errs)}\n"
+                
+            if getattr(result, "zalo_results", []):
+                ok = [r.app_id for r in result.zalo_results if r.status == "success"]
+                errs = [r.error for r in result.zalo_results if r.status == "error"]
+                if ok: msg += f"💬 Zalo: OK\n"
+                if errs: msg += f"❌ Zalo Lỗi: {errs[0]}\n"
+                
+            if getattr(result, "buffer_results", []):
+                ok = [f"{r.platform} ({r.channel_name})" for r in result.buffer_results if r.status == "success"]
+                errs = [f"{r.platform} ({r.channel_name}): {r.error}" for r in result.buffer_results if r.status == "error"]
+                if ok: msg += f"🔗 Buffer OK: {', '.join(ok)}\n"
+                if errs: msg += f"❌ Buffer Lỗi: {'; '.join(errs)}\n"
+                
             msg += time_str
             
         try:
