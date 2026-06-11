@@ -939,7 +939,8 @@ def main():
 
     webhook_url = None
 
-    chat_id = os.environ.get("CHAT_ID", "default")
+    cfg = load_config()
+    chat_id = cfg.chat_id or "default"
     output_dir = os.environ.get("OUTPUT_DIR", "/app/output")
     os.makedirs(output_dir, exist_ok=True)
     start_time_file = os.path.join(output_dir, f".start_time_{chat_id}.txt")
