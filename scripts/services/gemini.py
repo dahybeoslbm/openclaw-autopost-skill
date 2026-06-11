@@ -31,6 +31,7 @@ class GeminiService:
 
         payload = {
             "model": self._ollama.model,
+            "format": "json",
             "messages": [
                 {
                     "role": "system",
