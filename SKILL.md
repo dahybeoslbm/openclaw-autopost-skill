@@ -118,17 +118,18 @@ Với mỗi yêu cầu đăng bài mới, dùng suy luận để tìm các tham 
 ### Lệnh thực thi BẮT BUỘC
 
 ```bash
-/Users/itdev/.openclaw/workspace/skills/auto-travel-blogger/run.sh --topic="[TOPIC]" --platform="[PLATFORM]" --time="[TIME]" [--pages="[PAGES]"] [--wp-site="[WP_SITE]"]
+./skills/auto-travel-blogger/run.sh --topic="[TOPIC]" --platform="[PLATFORM]" --time="[TIME]" [--pages="[PAGES]"] [--wp-site="[WP_SITE]"]
+# Lưu ý: Trên VPS, thư mục skill có thể tên là 'openclaw-autopost-skill', hãy tự đổi tên cho phù hợp.
 ```
 
 **Ví dụ 1:** User: _"Review Đà Lạt đăng fb tất cả trang và wp site timchuyenbay.net lúc 20h nhé"_
 ```bash
-/Users/itdev/.openclaw/workspace/skills/auto-travel-blogger/run.sh --topic="Đà Lạt" --platform="facebook, wordpress" --time="2026-06-09T13:00:00Z" --pages="all" --wp-site="timchuyenbay.net"
+./skills/auto-travel-blogger/run.sh --topic="Đà Lạt" --platform="facebook, wordpress" --time="2026-06-09T13:00:00Z" --pages="all" --wp-site="timchuyenbay.net"
 ```
 
 **Ví dụ 2:** User: _"Xuất bàn buôn mê lên facebook"_ *(không nói rõ trang nào)*
 ```bash
-/Users/itdev/.openclaw/workspace/skills/auto-travel-blogger/run.sh --topic="buôn mê" --platform="facebook" --time=""
+./skills/auto-travel-blogger/run.sh --topic="buôn mê" --platform="facebook" --time=""
 ```
 
 ---
@@ -149,14 +150,14 @@ Với mỗi yêu cầu đăng bài mới, dùng suy luận để tìm các tham 
 
 **Lệnh cần chạy ngay (KHÔNG suy nghĩ gì thêm):**
 ```bash
-/Users/itdev/.openclaw/workspace/skills/auto-travel-blogger/run.sh "<NGUYÊN_VĂN_TIN_NHẮN>"
+./skills/auto-travel-blogger/run.sh "<NGUYÊN_VĂN_TIN_NHẮN>"
 ```
 
 **Ví dụ đúng:**
-- User nhắn `2` → Chạy: `./run.sh "2"`
-- User nhắn `1 3` → Chạy: `./run.sh "1 3"`
-- User nhắn `tất cả` → Chạy: `./run.sh "tất cả"`
-- User nhắn `huỷ` → Chạy: `./run.sh "huỷ"`
+- User nhắn `2` → Chạy: `./skills/auto-travel-blogger/run.sh "2"`
+- User nhắn `1 3` → Chạy: `./skills/auto-travel-blogger/run.sh "1 3"`
+- User nhắn `tất cả` → Chạy: `./skills/auto-travel-blogger/run.sh "tất cả"`
+- User nhắn `huỷ` → Chạy: `./skills/auto-travel-blogger/run.sh "huỷ"`
 
 **❌ NGHIÊM CẤM khi nhận số/huỷ:**
 - KHÔNG tự viết câu trả lời kiểu "Processing Expired Selection..."
