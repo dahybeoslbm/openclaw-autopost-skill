@@ -17,12 +17,20 @@ fi
 
 if [ -z "$CURRENT" ]; then
   if grep -q "^CHAT_IDS=" "$ENV_FILE" 2>/dev/null; then
-    sed -i '' "s/^CHAT_IDS=.*/CHAT_IDS=$NEW_ID/" "$ENV_FILE"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s/^CHAT_IDS=.*/CHAT_IDS=$NEW_ID/" "$ENV_FILE"
+    else
+      sed -i "s/^CHAT_IDS=.*/CHAT_IDS=$NEW_ID/" "$ENV_FILE"
+    fi
   else
     echo "CHAT_IDS=$NEW_ID" >> "$ENV_FILE"
   fi
 else
-  sed -i '' "s/^CHAT_IDS=.*/CHAT_IDS=$CURRENT,$NEW_ID/" "$ENV_FILE"
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s/^CHAT_IDS=.*/CHAT_IDS=$CURRENT,$NEW_ID/" "$ENV_FILE"
+  else
+    sed -i "s/^CHAT_IDS=.*/CHAT_IDS=$CURRENT,$NEW_ID/" "$ENV_FILE"
+  fi
 fi
 
 echo "✅ Đã thêm CHAT_ID=$NEW_ID vào .env"
