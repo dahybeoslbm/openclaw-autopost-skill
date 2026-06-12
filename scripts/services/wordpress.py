@@ -95,20 +95,28 @@ class WordPressService:
             resp = requests.get(url, timeout=15)
             resp.raise_for_status()
 
-            content_type = resp.headers.get("Content-Type", "").split(";")[0].lower()
-            if content_type == "image/webp":
-                ext = ".webp"
-            elif content_type in ("image/jpeg", "image/jpg"):
+            # Kiểm tra định dạng thực tế bằng magic bytes thay vì dựa vào header
+            ext = ".jpg"
+            header_bytes = resp.content[:12]
+            if header_bytes.startswith(b"\xff\xd8\xff"):
                 ext = ".jpg"
-            elif content_type == "image/png":
+            elif header_bytes.startswith(b"\x89PNG"):
                 ext = ".png"
-            elif content_type == "image/gif":
+            elif header_bytes.startswith(b"GIF8"):
                 ext = ".gif"
+            elif header_bytes.startswith(b"RIFF") and header_bytes[8:12] == b"WEBP":
+                ext = ".webp"
             else:
-                filename = url.split("/")[-1].split("?")[0] or "image.jpg"
-                ext = os.path.splitext(filename)[1].lower()
-                if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                # Fallback dùng header nếu không nhận diện được magic byte
+                content_type = resp.headers.get("Content-Type", "").split(";")[0].lower()
+                if content_type == "image/webp":
+                    ext = ".webp"
+                elif content_type in ("image/jpeg", "image/jpg"):
                     ext = ".jpg"
+                elif content_type == "image/png":
+                    ext = ".png"
+                elif content_type == "image/gif":
+                    ext = ".gif"
 
             fd, tmp_path = tempfile.mkstemp(suffix=ext)
             with os.fdopen(fd, "wb") as f:
