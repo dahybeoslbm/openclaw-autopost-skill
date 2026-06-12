@@ -847,6 +847,11 @@ def _continue_publish(
                     print(f"✅ [{site_url}] Bản nháp đã tạo")
                     print(f"   └─ Kiểm duyệt rồi Publish tại: {edit_url}")
 
+                    if "link" in wp_resp:
+                        if not hasattr(result, "wp_urls"):
+                            result.wp_urls = []
+                        result.wp_urls.append(wp_resp["link"])
+
                     if result.wp_post_id is None:
                         result.wp_post_id  = wp_resp["id"]
                         result.wp_post_url = wp_resp.get("link", "")
@@ -1049,7 +1054,11 @@ def main():
         else:
             msg = f"✅ Đã chạy lệnh: {user_input}\n"
             
-            if getattr(result, "wp_post_url", None):
+            if getattr(result, "wp_urls", []):
+                for url in result.wp_urls:
+                    if url:
+                        msg += f"🌐 WP: {url}\n"
+            elif getattr(result, "wp_post_url", None):
                 msg += f"🌐 WP: {result.wp_post_url}\n"
                 
             if getattr(result, "facebook_results", []):
