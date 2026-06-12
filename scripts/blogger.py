@@ -631,10 +631,6 @@ def _continue_publish(
     # WordPress luôn lưu draft để kiểm duyệt trước khi publish
     save_as_draft = True
 
-    # Khi đăng nhiều sites → tự động rewrite để tránh duplicate content
-    # Site đầu tiên dùng bản gốc, các site sau nhận bản rewrite riêng
-    rewrite_count = max(0, len(wp_sites_to_publish) - 1) if should_wp else 0
-
     if should_wp:
         _STATUS_LABELS = {
             "publish": "Đã publish",
@@ -644,22 +640,35 @@ def _continue_publish(
             "private": "Riêng tư",
         }
         all_duplicates: list[str] = []
+        filtered_wp_sites = []
 
         for site_cfg in wp_sites_to_publish:
             wp_svc     = WordPressService(site_cfg)
             duplicates = wp_svc.check_duplicate(drive_article.title)
-            for dup in duplicates:
-                label = _STATUS_LABELS.get(dup["status"], dup["status"])
-                all_duplicates.append(
-                    f"  ⚠️  [{site_cfg.site_url}] Bài \"{dup['title']}\" "
-                    f"đã tồn tại ({label})\n"
-                    f"     └─ {dup['edit_url']}"
-                )
+            if duplicates:
+                for dup in duplicates:
+                    label = _STATUS_LABELS.get(dup["status"], dup["status"])
+                    all_duplicates.append(
+                        f"  ⚠️  [{site_cfg.site_url}] Bài \"{dup['title']}\" "
+                        f"đã tồn tại ({label})\n"
+                        f"     └─ {dup['edit_url']}"
+                    )
+            else:
+                filtered_wp_sites.append(site_cfg)
 
         if all_duplicates:
-            msg = "\n".join(["⛔ Phát hiện bài viết trùng lặp:"] + all_duplicates)
+            msg = "\n".join(["⛔ Đã bỏ qua các site có bài viết trùng lặp:"] + all_duplicates)
+            print(msg)
+            
+        wp_sites_to_publish = filtered_wp_sites
+        if not wp_sites_to_publish:
+            msg = "⛔ Tất cả các site đều đã tồn tại bài viết này. Dừng tiến trình."
             print(msg)
             return PublishResult(file_path="", error="DUPLICATE_POST", prompt_msg=msg)
+
+    # Khi đăng nhiều sites → tự động rewrite để tránh duplicate content
+    # Site đầu tiên dùng bản gốc, các site sau nhận bản rewrite riêng
+    rewrite_count = max(0, len(wp_sites_to_publish) - 1) if should_wp else 0
     
     # ── Bước 4: Gemini — rewrite + captions trong 1 request ──────────────────
     plain = drive_article.plain_text()
