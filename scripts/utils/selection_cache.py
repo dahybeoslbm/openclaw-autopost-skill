@@ -208,6 +208,14 @@ def load_pending_pages(chat_id: str) -> PendingPageSelection | None:
 
 def delete_pending_pages(chat_id: str) -> None:
     _delete(_make_key(_PAGE_KEY_PREFIX, chat_id))
+    now = int(time.time())
+    with _get_conn() as conn:
+        rows = conn.execute("SELECT cache_key, payload FROM selection_cache WHERE expires_at > ?", (now,)).fetchall()
+        for key, payload in rows:
+            data = json.loads(payload)
+            if data.get("_type") == "page_selection":
+                conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
+        conn.commit()
 
 
 # ── WordPress site selection ─────────────────────────────────────────────────
@@ -275,6 +283,14 @@ def load_pending_wp_sites(chat_id: str) -> PendingWPSiteSelection | None:
 
 def delete_pending_wp_sites(chat_id: str) -> None:
     _delete(_make_key(_WP_SITE_KEY_PREFIX, chat_id))
+    now = int(time.time())
+    with _get_conn() as conn:
+        rows = conn.execute("SELECT cache_key, payload FROM selection_cache WHERE expires_at > ?", (now,)).fetchall()
+        for key, payload in rows:
+            data = json.loads(payload)
+            if data.get("_type") == "wp_site_selection":
+                conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
+        conn.commit()
 
 
 # ── WordPress rewrite mode ───────────────────────────────────────────────────
@@ -327,3 +343,11 @@ def load_pending_wp_rewrite_mode(chat_id: str) -> PendingWPRewriteMode | None:
 
 def delete_pending_wp_rewrite_mode(chat_id: str) -> None:
     _delete(_make_key(_WP_REWRITE_KEY_PREFIX, chat_id))
+    now = int(time.time())
+    with _get_conn() as conn:
+        rows = conn.execute("SELECT cache_key, payload FROM selection_cache WHERE expires_at > ?", (now,)).fetchall()
+        for key, payload in rows:
+            data = json.loads(payload)
+            if data.get("_type") == "wp_rewrite_mode":
+                conn.execute("DELETE FROM selection_cache WHERE cache_key = ?", (key,))
+        conn.commit()
