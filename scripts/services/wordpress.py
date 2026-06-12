@@ -53,6 +53,11 @@ class WordPressService:
             with open(image_path, "rb") as f:
                 img_data = f.read()
 
+            import mimetypes
+            mime_type, _ = mimetypes.guess_type(image_path)
+            if not mime_type:
+                mime_type = "image/jpeg"
+
             headers = {
                 k: v for k, v in self._session.headers.items()
                 if k != "Content-Type"
@@ -61,7 +66,7 @@ class WordPressService:
             resp = requests.post(
                 url=f"{self._config.api_base}/media",
                 headers=headers,
-                files={"file": (filename, img_data, "image/png")},
+                files={"file": (filename, img_data, mime_type)},
                 data={"title": filename},
                 timeout=self._config.timeout,
             )
@@ -90,10 +95,20 @@ class WordPressService:
             resp = requests.get(url, timeout=15)
             resp.raise_for_status()
 
-            filename = url.split("/")[-1].split("?")[0] or "image.jpg"
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+            content_type = resp.headers.get("Content-Type", "").split(";")[0].lower()
+            if content_type == "image/webp":
+                ext = ".webp"
+            elif content_type in ("image/jpeg", "image/jpg"):
                 ext = ".jpg"
+            elif content_type == "image/png":
+                ext = ".png"
+            elif content_type == "image/gif":
+                ext = ".gif"
+            else:
+                filename = url.split("/")[-1].split("?")[0] or "image.jpg"
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                    ext = ".jpg"
 
             fd, tmp_path = tempfile.mkstemp(suffix=ext)
             with os.fdopen(fd, "wb") as f:
