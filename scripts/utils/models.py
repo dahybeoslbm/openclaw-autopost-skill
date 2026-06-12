@@ -67,6 +67,7 @@ class PublishResult:
     wp_post_id: Optional[int] = None
     wp_post_url: Optional[str] = None
     wp_status: Optional[str] = None
+    wp_urls: list[str] = field(default_factory=list)
     buffer_results: list["BufferPostResult"] = field(default_factory=list)
     facebook_results: list["FacebookPostResult"] = field(default_factory=list)
     zalo_results: list["ZaloPostResult"] = field(default_factory=list)
