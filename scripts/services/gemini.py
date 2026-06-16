@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 # Các status code nên chuyển sang Ollama thay vì retry tiếp
 _OLLAMA_FALLBACK_STATUSES = {429, 503, 0}
-
+_FACEBOOK_FIXED_HASHTAGS = "#datvedoan #đặtvéđoàn"
 
 class GeminiService:
     def __init__(self, config: GeminiConfig, ollama_config: OllamaConfig | None = None):
@@ -154,20 +154,33 @@ class GeminiService:
 
     # ── Normalize facebook captions ───────────────────────────────────────────
 
-    def _normalize_result(self, result: dict, facebook_pages: list[dict] | None) -> dict:
-        """Đảm bảo facebook value là list có đủ phần tử nếu có nhiều pages."""
-        if not facebook_pages or len(facebook_pages) <= 1 or "facebook" not in result:
+    def _process_facebook(self, result: dict, facebook_pages: list[dict] | None) -> dict:
+        """
+        Normalize caption Facebook (đảm bảo đủ số phần tử cho từng page)
+        và thêm hashtag cố định — xử lý cả dạng str lẫn list trong 1 lần.
+        """
+        if "facebook" not in result:
             return result
 
         fb = result["facebook"]
-        if isinstance(fb, str):
-            result["facebook"] = [fb] * len(facebook_pages)
-        elif isinstance(fb, list):
-            while len(fb) < len(facebook_pages):
-                fb.append(fb[-1] if fb else "")
-            result["facebook"] = fb[:len(facebook_pages)]
-        return result
 
+        # Bước 1: normalize sang list nếu có nhiều pages
+        if facebook_pages and len(facebook_pages) > 1:
+            n = len(facebook_pages)
+            if isinstance(fb, str):
+                fb = [fb] * n
+            else:
+                while len(fb) < n:
+                    fb.append(fb[-1] if fb else "")
+                fb = fb[:n]
+
+        # Bước 2: thêm fixed hashtags (str hoặc list đều xử lý ở đây)
+        if isinstance(fb, str):
+            result["facebook"] = f"{fb} {_FACEBOOK_FIXED_HASHTAGS}"
+        else:
+            result["facebook"] = [f"{c} {_FACEBOOK_FIXED_HASHTAGS}" for c in fb]
+
+        return result
     # ── Social captions prompt builder ───────────────────────────────────────
 
     def build_social_captions_prompt(
@@ -247,7 +260,7 @@ Chỉ trả về các key sau, không thêm key khác:
             return {}
 
         try:
-            return self._normalize_result(self._parse_json(raw), facebook_pages)
+            return self._process_facebook(self._parse_json(raw), facebook_pages)
         except Exception as e:
             logger.warning("  → parse social_captions thất bại: %s", e)
             return {}
@@ -409,10 +422,7 @@ Trả về JSON hợp lệ duy nhất, không markdown, không giải thích:
             # Parse captions
             captions: dict = {}
             if platforms:
-                captions = self._normalize_result(
-                    data.get("captions", {}), facebook_pages
-                )
-
+                captions = self._process_facebook(data.get("captions", {}), facebook_pages)
             # Parse summary
             summary = data.get("summary", "") if need_summary else ""
 
