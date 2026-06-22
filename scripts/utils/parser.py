@@ -25,7 +25,7 @@ _PLATFORM_KEYWORDS: dict[str, list[str]] = {
     "bluesky":        ["bluesky", "blue sky"],
     "pinterest":      ["pinterest"],
     "mastodon":       ["mastodon"],
-    "google_business":["google business", "google my business"],
+    "google_business":["google business", "google my business", "google map", "google maps"],
     "zalo":           ["zalo"],
     "blog":           [],  # default — không khớp gì hết
 }
@@ -191,7 +191,7 @@ def _detect_topic(text: str, original: str) -> str:
     _PLT = (
         r"wordpress|wp|facebook|fb|instagram|ig|tiktok|tik\s+tok|"
         r"threads|twitter|x\.com|linkedin|youtube|yt|bluesky|blue\s+sky|"
-        r"pinterest|mastodon|google\s+business|google\s+my\s+business|zalo"
+        r"pinterest|mastodon|google\s+business|google\s+my\s+business|google\s+map|google\s+maps|zalo"
     )
     # "đăng lên facebook", "post trên instagram"
     s = re.sub(rf"\b(?:đăng|post|lên|trên|qua|lên\s+trang)\s+(?:{_PLT})\b", " ", s, flags=re.IGNORECASE)

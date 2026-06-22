@@ -133,6 +133,21 @@ class ZaloConfig:
         return all([self.api_url, self.api_key, self.app_id])
 
 @dataclass(frozen=True)
+class GoogleBusinessConfig:
+    """
+    Config để gọi Google Business Profile API.
+    Dùng refresh_token để tự động cấp mới access_token.
+    """
+    client_id: str
+    client_secret: str
+    refresh_token: str
+    timeout: int = 30
+
+    @property
+    def is_valid(self) -> bool:
+        return all([self.client_id, self.client_secret, self.refresh_token])
+
+@dataclass(frozen=True)
 class AppConfig:
     output_dir: str
     chat_id:    str
@@ -145,6 +160,7 @@ class AppConfig:
     googledrive: GoogleDriveAPIConfig
     facebook: FacebookConfig
     zalo: ZaloConfig
+    google_business: GoogleBusinessConfig
 
 def load_config() -> AppConfig:
     """
@@ -195,5 +211,11 @@ def load_config() -> AppConfig:
             api_key=os.environ.get("ZALO_API_KEY", ""),
             app_id=os.environ.get("ZALO_APP_ID", ""),
             timeout=int(os.environ.get("ZALO_TIMEOUT", "30")),
+        ),
+        google_business=GoogleBusinessConfig(
+            client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),
+            client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+            refresh_token=os.environ.get("GOOGLE_REFRESH_TOKEN", ""),
+            timeout=30,
         ),
     )

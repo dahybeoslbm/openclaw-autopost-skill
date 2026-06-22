@@ -21,11 +21,12 @@ from bs4 import BeautifulSoup
 import argparse
 from utils.parser import _detect_schedule, _detect_preselection
 
-from config import FacebookConfig, ZaloConfig, load_config
+from config import FacebookConfig, ZaloConfig, GoogleBusinessConfig, load_config
 from services.facebook import FacebookService
 from services.zalo import ZaloService
+from services.google_business import GoogleBusinessService
 from utils.logger import get_logger
-from utils.models import FacebookPostResult, ZaloPostResult, PublishResult, BufferPostResult
+from utils.models import FacebookPostResult, ZaloPostResult, PublishResult, BufferPostResult, GoogleBusinessPostResult
 from utils.parser import parse_request
 from services.gemini import GeminiService
 from services.wordpress import WordPressService
@@ -242,35 +243,27 @@ def _worker_zalo(
     cfg_zalo: ZaloConfig,
     article_data: dict,
     cover_photo_url: str = "",
-    cfg_wp = None,
 ) -> ZaloPostResult:
-    wp_svc = None
-    if cfg_wp and cfg_wp.is_valid:
-        from services.wordpress import WordPressService
-        wp_svc = WordPressService(cfg_wp)
-
-    if cover_photo_url and ("localhost" in cover_photo_url or "host.docker.internal" in cover_photo_url or "drive.google.com" in cover_photo_url):
-        if wp_svc:
-            try:
-                logger.info("  → [Zalo] Upload ảnh cover trung gian lên WordPress...")
-                upload_res = wp_svc.upload_image_from_url(cover_photo_url)
-                if upload_res:
-                    cover_photo_url = upload_res[1]
-                else:
-                    logger.warning("  → [Zalo] Upload ảnh cover trung gian thất bại.")
-            except Exception as e:
-                logger.error("  → [Zalo] Lỗi upload ảnh cover trung gian: %s", e)
-
-    # Parse and replace body images
-    content = article_data.get("content_html", "")
-    if content and wp_svc:
-        new_content, _ = wp_svc.upload_and_replace_html_images(content)
-        article_data["content_html"] = new_content
-
+    zalo_data = dict(article_data)
+    if "zalo_content_html" in zalo_data:
+        zalo_data["content_html"] = zalo_data.pop("zalo_content_html")
+        
+    from services.zalo import ZaloService
     zalo = ZaloService(cfg_zalo)
     return zalo.publish_from_article_data(
-        article_data    = article_data,
+        article_data    = zalo_data,
         cover_photo_url = cover_photo_url,
+    )
+
+def _worker_google_business(
+    cfg_gb: GoogleBusinessConfig,
+    text: str,
+    drive_image_urls: list[str],
+) -> GoogleBusinessPostResult:
+    gb = GoogleBusinessService(cfg_gb)
+    return gb.post_local_post(
+        text=text,
+        image_urls=drive_image_urls or None,
     )
 
 # ── Drive article loader helper ───────────────────────────────────────────────
@@ -504,6 +497,7 @@ def _continue_publish(
     should_wp     = publish_all or "wordpress" in platforms
     should_facebook  = cfg.facebook.is_valid and (publish_all or "facebook" in platforms)
     should_zalo      = cfg.zalo.is_valid and (publish_all or "zalo" in platforms)
+    should_google_business = cfg.google_business.is_valid and (publish_all or "google_business" in platforms or "google" in platforms)
 
     if publish_all:
         buffer_platforms = [
@@ -781,14 +775,39 @@ def _continue_publish(
     result = PublishResult(file_path=file_path)
 
     # ── Bước 6: Publish song song ─────────────────────────────────────────────
-    logger.info("[6/6] Xuất bản song song (WP=%s | Buffer=%s | FB=%s | Zalo=%s)...",
-                should_wp, should_buffer, should_facebook, should_zalo)
+    logger.info("[6/6] Xuất bản song song (WP=%s | Buffer=%s | FB=%s | Zalo=%s | GB=%s)...",
+                should_wp, should_buffer, should_facebook, should_zalo, should_google_business)
+
+    # ── Upload ảnh trung gian (Proxy) ─────────────────────────────────────────
+    if cfg.wordpress and cfg.wordpress.is_valid and (should_zalo or should_google_business or should_facebook or should_buffer):
+        from services.wordpress import WordPressService
+        wp_proxy = WordPressService(cfg.wordpress)
+        
+        logger.info("  → [Proxy] Kiểm tra và chuyển đổi ảnh sang public URL...")
+        new_drive_image_urls = []
+        for url in drive_image_urls:
+            if "googleusercontent.com" in url or "drive.google.com" in url:
+                res = wp_proxy.upload_image_from_url(url)
+                if res:
+                    new_drive_image_urls.append(res[1])
+                else:
+                    new_drive_image_urls.append(url)
+            else:
+                new_drive_image_urls.append(url)
+        drive_image_urls = new_drive_image_urls
+        
+        if should_zalo:
+            zalo_html = base_article_data.get("content_html", "")
+            if zalo_html:
+                zalo_html, _ = wp_proxy.upload_and_replace_html_images(zalo_html)
+                base_article_data["zalo_content_html"] = zalo_html
 
     wp_futures: list[tuple]  = []
     buffer_future            = None
     facebook_future          = None
     zalo_future              = None
-    max_workers              = len(wp_sites_to_publish) + 3
+    gb_future                = None
+    max_workers              = len(wp_sites_to_publish) + 4
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
 
@@ -832,7 +851,15 @@ def _continue_publish(
                 cfg.zalo,
                 base_article_data,
                 zalo_cover,
-                cfg.wordpress,
+            )
+
+        if should_google_business:
+            gb_text = seo_summary if seo_summary else drive_article.title
+            gb_future = executor.submit(
+                _worker_google_business,
+                cfg.google_business,
+                gb_text,
+                drive_image_urls,
             )
 
         # ── Thu kết quả WP ────────────────────────────────────────────────────
@@ -893,8 +920,21 @@ def _continue_publish(
             except Exception as exc:
                 logger.warning("  → ❌ Zalo thất bại: %s", exc)
 
-    if not should_wp and not should_buffer and not should_facebook and not should_zalo:
-        logger.info("  → 💾 Chỉ lưu file (WP/Buffer/Facebook/Zalo chưa cấu hình)")
+        # ── Thu kết quả Google Business ───────────────────────────────────────
+        if gb_future is not None:
+            try:
+                gb_result = gb_future.result()
+                result.google_business_results = [gb_result]
+                if gb_result.status == "success":
+                    logger.info("  → Google Business: ✅ Đăng bài thành công | post_id=%s",
+                                gb_result.post_id)
+                else:
+                    logger.warning("  → Google Business: ❌ %s", gb_result.error)
+            except Exception as exc:
+                logger.warning("  → ❌ Google Business thất bại: %s", exc)
+
+    if not should_wp and not should_buffer and not should_facebook and not should_zalo and not should_google_business:
+        logger.info("  → 💾 Chỉ lưu file (WP/Buffer/Facebook/Zalo/GB chưa cấu hình)")
 
     if webhook_url:
         _notify_webhook(webhook_url, drive_article.title, file_path)

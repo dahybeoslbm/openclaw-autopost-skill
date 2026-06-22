@@ -18,7 +18,7 @@ KHÔNG suy nghĩ, KHÔNG giải thích, KHÔNG thêm bất kỳ chữ nào trư�
 
 ```
 👋 *Chào mừng bạn đến với OpenClaw\!*
-Bot giúp bạn đăng bài tự động lên WordPress, Facebook và Threads — chỉ cần nhắn một câu là xong\!
+Bot giúp bạn đăng bài tự động lên WordPress, Facebook, Threads và Google Maps — chỉ cần nhắn một câu là xong\!
 
 🔐 *CHƯA CÓ QUYỀN? ĐỌC TRƯỚC NHÉ\!*
 Lần đầu dùng bot, bạn cần được cấp quyền\.
@@ -37,8 +37,9 @@ Ví dụ:
 - WordPress → gõ `wordpress` hoặc `wp`
 - Facebook → gõ `facebook` hoặc `fb`
 - Threads → gõ `threads`
+- Google Maps → gõ `google map` hoặc `google business`
 - Zalo → gõ `zalo`
-💡 Không nhắc nền tảng? Bot tự đăng cả 3 luôn\!
+💡 Không nhắc nền tảng? Bot tự đăng cả 4 luôn\!
 
 ⏰ *HẸN GIỜ ĐĂNG BÀI*
 - Không đề cập → Đăng ngay
@@ -100,7 +101,7 @@ Với mỗi yêu cầu đăng bài mới, dùng suy luận để tìm các tham 
 | Tham số | Mô tả |
 |---|---|
 | `TOPIC` | Địa danh hoặc chủ đề bài viết (VD: "Hội An", "Đà Lạt", "Khuyến mãi tháng 6") |
-| `PLATFORM` | Nền tảng: `facebook`, `instagram`, `threads`, `wordpress`, `zalo` (nhiều cái cách nhau dấu phẩy). Mặc định: `blog` |
+| `PLATFORM` | Nền tảng: `facebook`, `instagram`, `threads`, `wordpress`, `zalo`, `google_business` (nhiều cái cách nhau dấu phẩy). Mặc định: `blog` |
 | `TIME` | Thời gian hẹn giờ dạng **ISO 8601 UTC** (VN = UTC+7, trừ 7 tiếng). Đăng ngay → để chuỗi rỗng `""` |
 | `PAGES` | Trang Facebook cụ thể qua cờ `--pages` (xem quy tắc bên dưới) |
 | `WP_SITE` | Site WordPress qua cờ `--wp-site` (xem quy tắc bên dưới) |

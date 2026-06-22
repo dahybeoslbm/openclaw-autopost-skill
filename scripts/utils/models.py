@@ -58,6 +58,14 @@ class ZaloPostResult:
     error:         str = ""
 
 @dataclass
+class GoogleBusinessPostResult:
+    """Kết quả đăng bài lên Google Business Profile."""
+    location_id: str
+    status:      str          # "success" | "error"
+    post_id:     str = ""
+    error:       str = ""
+
+@dataclass
 class PublishResult:
 
     """Kết quả sau khi xuất bản bài viết."""
@@ -71,6 +79,7 @@ class PublishResult:
     buffer_results: list["BufferPostResult"] = field(default_factory=list)
     facebook_results: list["FacebookPostResult"] = field(default_factory=list)
     zalo_results: list["ZaloPostResult"] = field(default_factory=list)
+    google_business_results: list["GoogleBusinessPostResult"] = field(default_factory=list)
 
     @property
     def posted_to_wp(self) -> bool:
@@ -91,3 +100,7 @@ class PublishResult:
     @property
     def posted_to_zalo(self) -> bool:
         return any(r.status == "success" for r in self.zalo_results)
+
+    @property
+    def posted_to_google_business(self) -> bool:
+        return any(r.status == "success" for r in self.google_business_results)

@@ -27,3 +27,6 @@ travel_blog_img_*.jpg
 # ── OS ──────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+credentials.json
+token.json
